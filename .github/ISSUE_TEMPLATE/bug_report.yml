@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible PaneSpace defect
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve PaneSpace. Remove personal filenames and credentials from logs or screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: PaneSpace version or commit
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 26.1
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest repeatable sequence.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: data_risk
+    attributes:
+      label: Did this affect file contents or locations?
+      options:
+        - No
+        - Potentially
+        - Yes
+    validations:
+      required: true
