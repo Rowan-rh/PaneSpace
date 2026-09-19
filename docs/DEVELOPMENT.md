@@ -62,3 +62,7 @@ The current `FileProviding` protocol is deliberately small and synchronous for t
 6. Publish checksums and release notes.
 
 The signing and notarization steps are intentionally not automated until repository secrets and a release policy are approved.
+
+## Repository policy
+
+The desired lightweight `main` branch ruleset is stored in `.github/rulesets/main.json`. It prevents branch deletion and force pushes without requiring pull requests for the current single-maintainer phase. If collaboration expands, add required pull requests and CI checks through a new reviewed policy change.
