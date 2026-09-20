@@ -40,6 +40,10 @@ English source strings are the development language. Simplified Chinese translat
 
 The Swift package processes localization resources for source builds. `scripts/build-app.sh` also copies supported `.lproj` directories into the standalone application bundle. When adding a language, update both `CFBundleLocalizations` and the copied resource directories in that script, then launch the built app with that language during UI verification.
 
+## Application icon
+
+The editable raster master is `Assets/PaneSpace-AppIcon.png`; the generated macOS icon family is `Assets/PaneSpace.icns`. Keep both files in sync when the icon changes. The standalone bundle build copies the `.icns` file into `Contents/Resources` and records it in `CFBundleIconFile` before signing.
+
 ## Adding a provider
 
 1. Define the provider's capabilities before implementing UI.

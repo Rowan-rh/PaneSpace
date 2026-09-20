@@ -636,9 +636,10 @@ private struct AboutSettingsPage: View {
     var body: some View {
         SettingsPage(title: "About PaneSpace", subtitle: "An independent open-source file manager for macOS.") {
             VStack(spacing: 14) {
-                Image(systemName: "rectangle.split.2x1.fill")
-                    .font(.system(size: 54, weight: .light))
-                    .foregroundStyle(Color.accentColor)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 82, height: 82)
                 Text("PaneSpace")
                     .font(.title.bold())
                 Text("Version 0.1.0")

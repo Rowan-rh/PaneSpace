@@ -1,5 +1,7 @@
 # PaneSpace
 
+<img src="Assets/PaneSpace-AppIcon.png" alt="PaneSpace app icon" width="112" />
+
 PaneSpace is a clean-room, open-source macOS file manager focused on tabs and side-by-side workflows. It uses only public Apple APIs and does not contain code or assets from any commercial file manager.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-black)
