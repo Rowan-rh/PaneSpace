@@ -8,9 +8,10 @@ struct PaneSpaceApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appModel)
-                .frame(minWidth: 940, minHeight: 580)
+                .frame(minWidth: 1_000, minHeight: 640)
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1_180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
@@ -25,8 +26,8 @@ struct PaneSpaceApp: App {
 
                 Divider()
 
-                Button(appModel.isDualPane ? "Close Second Pane" : "Open Second Pane") {
-                    appModel.isDualPane.toggle()
+                Button(appModel.paneLayout == .single ? "Open Second Pane" : "Close Extra Panes") {
+                    appModel.toggleSecondPane()
                 }
                 .keyboardShortcut("d", modifiers: [.command, .option])
             }
@@ -42,6 +43,13 @@ struct PaneSpaceApp: App {
                     .keyboardShortcut("r", modifiers: .command)
                 Button("Quick Look") { appModel.activePaneModel.previewSelection() }
                     .keyboardShortcut(.space, modifiers: [])
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appModel.isShowingSettings = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
             }
         }
     }

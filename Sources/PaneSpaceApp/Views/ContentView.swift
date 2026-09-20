@@ -2,49 +2,57 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
+    @AppStorage("sidebarWidth") private var sidebarWidth = 196.0
+    @AppStorage("accentColor") private var accentColor = "indigo"
+    @AppStorage("themeIntensity") private var themeIntensity = 0.12
+    @AppStorage("showToolbarNavigation") private var showToolbarNavigation = true
+
     @State private var newFolderName = "New Folder"
+    @State private var showsLayoutPicker = false
 
     var body: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 170, ideal: 205, max: 260)
+                .navigationSplitViewColumnWidth(
+                    min: 164,
+                    ideal: CGFloat(sidebarWidth),
+                    max: 286
+                )
         } detail: {
-            Group {
-                if appModel.isDualPane {
-                    HSplitView {
-                        BrowserPaneView(model: appModel.primaryPane, slot: .primary)
-                        BrowserPaneView(model: appModel.secondaryPane, slot: .secondary)
-                    }
-                } else {
-                    BrowserPaneView(model: appModel.primaryPane, slot: .primary)
+            PaneWorkspaceView()
+                .background(Color(nsColor: .windowBackgroundColor))
+                .overlay {
+                    accent.opacity(themeIntensity * 0.035)
+                        .allowsHitTesting(false)
                 }
-            }
-            .background(Color(nsColor: .windowBackgroundColor))
         }
+        .tint(accent)
         .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                Button {
-                    appModel.activePaneModel.goBack()
-                } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .disabled(!appModel.activePaneModel.canGoBack)
-                .help("Back")
+            if showToolbarNavigation {
+                ToolbarItemGroup(placement: .navigation) {
+                    Button {
+                        appModel.activePaneModel.goBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!appModel.activePaneModel.canGoBack)
+                    .help("Back")
 
-                Button {
-                    appModel.activePaneModel.goForward()
-                } label: {
-                    Image(systemName: "chevron.right")
-                }
-                .disabled(!appModel.activePaneModel.canGoForward)
-                .help("Forward")
+                    Button {
+                        appModel.activePaneModel.goForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!appModel.activePaneModel.canGoForward)
+                    .help("Forward")
 
-                Button {
-                    appModel.activePaneModel.goUp()
-                } label: {
-                    Image(systemName: "arrow.up")
+                    Button {
+                        appModel.activePaneModel.goUp()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                    }
+                    .help("Parent Folder")
                 }
-                .help("Parent Folder")
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
@@ -63,14 +71,22 @@ struct ContentView: View {
                 .help("New Tab")
 
                 Button {
-                    appModel.isDualPane.toggle()
-                    if !appModel.isDualPane {
-                        appModel.activePane = .primary
-                    }
+                    showsLayoutPicker.toggle()
                 } label: {
-                    Image(systemName: appModel.isDualPane ? "rectangle.split.2x1.fill" : "rectangle")
+                    PaneLayoutGlyph(layout: appModel.paneLayout)
+                        .frame(width: 23, height: 17)
                 }
-                .help("Toggle Dual Pane")
+                .help("Pane Layout")
+                .popover(isPresented: $showsLayoutPicker, arrowEdge: .bottom) {
+                    PaneLayoutPicker(selection: $appModel.paneLayout)
+                }
+
+                Button {
+                    appModel.isShowingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .help("Settings")
             }
         }
         .sheet(isPresented: $appModel.isCreatingFolder) {
@@ -95,5 +111,186 @@ struct ContentView: View {
             .padding(24)
             .frame(width: 360)
         }
+        .sheet(isPresented: $appModel.isShowingSettings) {
+            SettingsView()
+                .frame(width: 860, height: 620)
+        }
+    }
+
+    private var accent: Color {
+        switch accentColor {
+        case "blue": .blue
+        case "teal": .teal
+        case "green": .green
+        case "orange": .orange
+        case "pink": .pink
+        case "purple": .purple
+        default: .indigo
+        }
+    }
+}
+
+private struct PaneWorkspaceView: View {
+    @EnvironmentObject private var appModel: AppModel
+
+    var body: some View {
+        switch appModel.paneLayout {
+        case .single:
+            pane(.primary)
+        case .twoColumns:
+            HSplitView {
+                pane(.primary)
+                pane(.secondary)
+            }
+        case .twoRows:
+            VSplitView {
+                pane(.primary)
+                pane(.secondary)
+            }
+        case .primaryLeft:
+            HSplitView {
+                pane(.primary)
+                    .layoutPriority(1)
+                VSplitView {
+                    pane(.secondary)
+                    pane(.tertiary)
+                }
+                .frame(minWidth: 260)
+            }
+        case .primaryRight:
+            HSplitView {
+                VSplitView {
+                    pane(.secondary)
+                    pane(.tertiary)
+                }
+                .frame(minWidth: 260)
+                pane(.primary)
+                    .layoutPriority(1)
+            }
+        case .primaryTop:
+            VSplitView {
+                pane(.primary)
+                    .layoutPriority(1)
+                HSplitView {
+                    pane(.secondary)
+                    pane(.tertiary)
+                }
+                .frame(minHeight: 220)
+            }
+        case .primaryBottom:
+            VSplitView {
+                HSplitView {
+                    pane(.secondary)
+                    pane(.tertiary)
+                }
+                .frame(minHeight: 220)
+                pane(.primary)
+                    .layoutPriority(1)
+            }
+        case .threeColumns:
+            HSplitView {
+                pane(.primary)
+                pane(.secondary)
+                pane(.tertiary)
+            }
+        case .threeRows:
+            VSplitView {
+                pane(.primary)
+                pane(.secondary)
+                pane(.tertiary)
+            }
+        case .fourGrid:
+            VSplitView {
+                HSplitView {
+                    pane(.primary)
+                    pane(.secondary)
+                }
+                HSplitView {
+                    pane(.tertiary)
+                    pane(.quaternary)
+                }
+            }
+        case .fourColumns:
+            HSplitView {
+                pane(.primary)
+                pane(.secondary)
+                pane(.tertiary)
+                pane(.quaternary)
+            }
+        case .fourRows:
+            VSplitView {
+                pane(.primary)
+                pane(.secondary)
+                pane(.tertiary)
+                pane(.quaternary)
+            }
+        }
+    }
+
+    private func pane(_ slot: PaneSlot) -> some View {
+        BrowserPaneView(model: appModel.pane(for: slot), slot: slot)
+            .frame(minWidth: 210, minHeight: 150)
+    }
+}
+
+struct PaneLayoutPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selection: PaneLayout
+
+    private let columns = Array(repeating: GridItem(.fixed(60), spacing: 8), count: 4)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pane Layout")
+                .font(.headline)
+
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(PaneLayout.allCases) { layout in
+                    Button {
+                        selection = layout
+                        dismiss()
+                    } label: {
+                        PaneLayoutGlyph(layout: layout)
+                            .frame(width: 42, height: 30)
+                            .padding(7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(selection == layout ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(selection == layout ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help(layout.title)
+                }
+            }
+
+            Text(selection.title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+    }
+}
+
+struct PaneLayoutGlyph: View {
+    let layout: PaneLayout
+
+    var body: some View {
+        Canvas { context, size in
+            for (index, frame) in layout.normalizedFrames.enumerated() {
+                let rect = CGRect(
+                    x: frame.minX * size.width,
+                    y: frame.minY * size.height,
+                    width: frame.width * size.width,
+                    height: frame.height * size.height
+                ).insetBy(dx: 1, dy: 1)
+                let path = Path(roundedRect: rect, cornerRadius: 2)
+                context.fill(path, with: .color(index == 0 ? Color.accentColor : Color.secondary.opacity(0.55)))
+            }
+        }
+        .accessibilityLabel(layout.title)
     }
 }

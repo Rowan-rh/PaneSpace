@@ -28,6 +28,16 @@ FileProviding protocol
 - `Services`: file-system access and platform integrations such as Quick Look.
 - `Views`: SwiftUI presentation with no direct file mutation.
 
+## Workspace layout
+
+`PaneLayout` defines twelve arrangements using one to four persistent `BrowserPaneModel` instances. Changing a layout changes presentation only; each pane keeps its independent tabs, navigation history, selection, sorting, and search state. The primary pane receives extra space in asymmetric layouts using a 62/38 proportion.
+
+Window chrome follows fixed density targets so layouts remain predictable: a 196-point default sidebar, 36-point tab strip, 36-point address bar, and 24-point status bar. These values are user-adjustable only where a setting has a clear accessibility or density benefit.
+
+## Preferences
+
+The Settings scene uses `AppStorage` for lightweight user preferences. Options that are already connected update open windows immediately. Planned capabilities are visibly marked rather than silently pretending to work. Preferences that grow into structured data, such as workspaces, hotkeys, providers, or contextual-menu definitions, must move to versioned models instead of accumulating independent keys.
+
 ## Provider contract
 
 The first implementation uses synchronous local operations to keep the MVP small. Remote providers should evolve the contract toward asynchronous, cancellable operations and expose capabilities such as rename, trash, server-side copy, and thumbnails.
