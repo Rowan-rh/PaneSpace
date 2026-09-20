@@ -263,11 +263,11 @@ struct PaneLayoutPicker: View {
                             }
                     }
                     .buttonStyle(.plain)
-                    .help(layout.title)
+                    .help(L10n.text(layout.title))
                 }
             }
 
-            Text(selection.title)
+            Text(L10n.text(selection.title))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -291,6 +291,6 @@ struct PaneLayoutGlyph: View {
                 context.fill(path, with: .color(index == 0 ? Color.accentColor : Color.secondary.opacity(0.55)))
             }
         }
-        .accessibilityLabel(layout.title)
+        .accessibilityLabel(L10n.text(layout.title))
     }
 }

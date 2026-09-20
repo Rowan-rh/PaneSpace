@@ -26,8 +26,10 @@ struct PaneSpaceApp: App {
 
                 Divider()
 
-                Button(appModel.paneLayout == .single ? "Open Second Pane" : "Close Extra Panes") {
+                Button {
                     appModel.toggleSecondPane()
+                } label: {
+                    Text(L10n.text(appModel.paneLayout == .single ? "Open Second Pane" : "Close Extra Panes"))
                 }
                 .keyboardShortcut("d", modifiers: [.command, .option])
             }

@@ -74,7 +74,7 @@ enum FileProviderError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidName:
-            return "The name cannot be empty or contain a slash."
+            return L10n.text("The name cannot be empty or contain a slash.")
         }
     }
 }
