@@ -12,6 +12,7 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [x] Create folder, rename, Trash, Quick Look, and Finder reveal
 - [x] Local provider boundary and initial tests
 - [x] Native settings center and live appearance controls
+- [x] List and multi-level column browsing modes
 - [ ] Persist window, pane, and tab state
 - [ ] Add CI for build and tests
 
