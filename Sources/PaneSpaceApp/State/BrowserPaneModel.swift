@@ -13,18 +13,24 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var sort: FileSort = .name
     @Published var sortAscending = true
     @Published var showsHiddenFiles = false
+    @Published var viewMode: BrowserViewMode
+    @Published var columns: [BrowserColumn] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var renameTarget: FileItem?
 
     private let provider: FileProviding
     private var refreshTask: Task<Void, Never>?
+    private var columnLoadTask: Task<Void, Never>?
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser, provider: FileProviding = LocalFileProvider()) {
         let tab = BrowserTab(url: url)
         self.tabs = [tab]
         self.activeTabID = tab.id
         self.provider = provider
+        self.viewMode = BrowserViewMode(
+            rawValue: UserDefaults.standard.string(forKey: "defaultViewMode") ?? "list"
+        ) ?? .list
         refresh()
     }
 
@@ -43,11 +49,26 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     var canGoForward: Bool { !activeTab.forwardHistory.isEmpty }
 
     var visibleItems: [FileItem] {
-        let filtered = searchText.isEmpty
-            ? items
-            : items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        displayedItems(from: items)
+    }
 
-        return filtered.sorted { lhs, rhs in
+    var selectedItems: [FileItem] {
+        let availableItems = columns.flatMap(\.items) + items
+        return Array(Dictionary(grouping: availableItems, by: \.id).compactMap { _, values in
+            values.first(where: { selection.contains($0.id) })
+        })
+    }
+
+    func displayedItems(from source: [FileItem]) -> [FileItem] {
+        let filtered = searchText.isEmpty
+            ? source
+            : source.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+
+        return sortedItems(filtered)
+    }
+
+    private func sortedItems(_ source: [FileItem]) -> [FileItem] {
+        source.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory {
                 return lhs.isDirectory
             }
@@ -64,6 +85,68 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 result = lhs.kind.localizedStandardCompare(rhs.kind)
             }
             return sortAscending ? result == .orderedAscending : result == .orderedDescending
+        }
+    }
+
+    func setViewMode(_ mode: BrowserViewMode) {
+        viewMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "defaultViewMode")
+        if mode == .columns, columns.isEmpty {
+            columns = [BrowserColumn(directory: currentURL, items: items, selectedItemID: nil, isLoading: false, errorMessage: nil)]
+        }
+    }
+
+    func selectColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID) {
+        guard let index = columns.firstIndex(where: { $0.id == columnID }) else { return }
+
+        columnLoadTask?.cancel()
+        columns[index].selectedItemID = item.id
+        if columns.count > index + 1 {
+            columns.removeSubrange((index + 1)...)
+        }
+        selection = [item.id]
+
+        guard item.isDirectory else { return }
+
+        var tab = activeTab
+        if tab.url != item.url {
+            tab.backHistory.append(tab.url)
+            tab.forwardHistory.removeAll()
+        }
+        tab.url = item.url.standardizedFileURL
+        activeTab = tab
+
+        columns.append(
+            BrowserColumn(directory: item.url, items: [], selectedItemID: nil, isLoading: true, errorMessage: nil)
+        )
+        items = []
+
+        let directory = item.url
+        let showsHiddenFiles = showsHiddenFiles
+        let provider = provider
+        columnLoadTask = Task {
+            do {
+                let loadedItems = try await Task.detached(priority: .userInitiated) {
+                    try provider.contents(of: directory, showsHiddenFiles: showsHiddenFiles)
+                }.value
+
+                guard !Task.isCancelled,
+                      let lastIndex = columns.indices.last,
+                      columns[lastIndex].directory == directory else { return }
+                columns[lastIndex].items = loadedItems
+                columns[lastIndex].isLoading = false
+                items = loadedItems
+                errorMessage = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      let lastIndex = columns.indices.last,
+                      columns[lastIndex].directory == directory else { return }
+                columns[lastIndex].isLoading = false
+                columns[lastIndex].errorMessage = error.localizedDescription
+                items = []
+            }
         }
     }
 
@@ -148,6 +231,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
                 guard !Task.isCancelled, currentURL == directory else { return }
                 items = refreshedItems
+                columns = [
+                    BrowserColumn(
+                        directory: directory,
+                        items: refreshedItems,
+                        selectedItemID: nil,
+                        isLoading: false,
+                        errorMessage: nil
+                    )
+                ]
                 selection = selection.intersection(Set(refreshedItems.map(\.id)))
                 isLoading = false
                 errorMessage = nil
@@ -156,6 +248,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             } catch {
                 guard !Task.isCancelled, currentURL == directory else { return }
                 items = []
+                columns = [
+                    BrowserColumn(
+                        directory: directory,
+                        items: [],
+                        selectedItemID: nil,
+                        isLoading: false,
+                        errorMessage: error.localizedDescription
+                    )
+                ]
                 selection = []
                 isLoading = false
                 errorMessage = error.localizedDescription
@@ -181,6 +282,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func rename(_ item: FileItem, to newName: String) {
         do {
             let destination = try provider.rename(item.url, to: newName)
+            if currentURL.standardizedFileURL == item.url.standardizedFileURL {
+                var tab = activeTab
+                tab.url = destination
+                activeTab = tab
+            }
             refresh()
             selection = [destination]
         } catch {
@@ -190,7 +296,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func trashSelection() {
         do {
-            let selectedItems = items.filter { selection.contains($0.id) }
             for item in selectedItems {
                 try provider.moveToTrash(item.url)
             }
@@ -201,12 +306,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func previewSelection() {
-        let urls = visibleItems.filter { selection.contains($0.id) }.map(\.url)
+        let urls = selectedItems.map(\.url)
         QuickLookCoordinator.shared.show(urls: urls)
     }
 
     func revealSelectionInFinder() {
-        let urls = visibleItems.filter { selection.contains($0.id) }.map(\.url)
+        let urls = selectedItems.map(\.url)
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
@@ -217,6 +322,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         } else {
             sort = newSort
             sortAscending = true
+        }
+        columns = columns.map { column in
+            var updatedColumn = column
+            updatedColumn.items = sortedItems(column.items)
+            return updatedColumn
         }
     }
 

@@ -392,7 +392,7 @@ private struct FileListSettingsPage: View {
                     Picker("", selection: $defaultViewMode) {
                         Text("List").tag("list")
                         Text("Icons — Planned").tag("icons")
-                        Text("Columns — Planned").tag("columns")
+                        Text("Columns").tag("columns")
                         Text("Gallery — Planned").tag("gallery")
                     }
                     .labelsHidden()

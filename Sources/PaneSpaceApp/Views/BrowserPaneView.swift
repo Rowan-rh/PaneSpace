@@ -100,14 +100,19 @@ struct BrowserPaneView: View {
                 systemImage: "exclamationmark.folder",
                 description: Text(error)
             )
-        } else if model.visibleItems.isEmpty {
+        } else if model.visibleItems.isEmpty, model.viewMode == .list {
             ContentUnavailableView(
                 L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                 systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
                 description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
             )
         } else {
-            FileListView(model: model, compact: appModel.paneLayout.prefersCompactRows)
+            switch model.viewMode {
+            case .list:
+                FileListView(model: model, compact: appModel.paneLayout.prefersCompactRows)
+            case .columns:
+                ColumnBrowserView(model: model)
+            }
         }
     }
 }
@@ -269,13 +274,22 @@ private struct PathBarView: View {
 
     private var viewMenu: some View {
         Menu {
-            Label("List", systemImage: "list.bullet")
+            ForEach(BrowserViewMode.allCases) { mode in
+                Button {
+                    model.setViewMode(mode)
+                } label: {
+                    if model.viewMode == mode {
+                        Label(L10n.text(mode.title), systemImage: "checkmark")
+                    } else {
+                        Label(L10n.text(mode.title), systemImage: mode.systemImage)
+                    }
+                }
+            }
             Divider()
             Button("Icons — Planned") {}.disabled(true)
-            Button("Columns — Planned") {}.disabled(true)
             Button("Gallery — Planned") {}.disabled(true)
         } label: {
-            Image(systemName: "list.bullet")
+            Image(systemName: model.viewMode.systemImage)
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
@@ -309,6 +323,138 @@ private struct PathBarView: View {
         .menuStyle(.borderlessButton)
         .frame(width: 24)
         .help("Sort and Filter")
+    }
+}
+
+private struct ColumnBrowserView: View {
+    @ObservedObject var model: BrowserPaneModel
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(model.columns) { column in
+                        ColumnView(model: model, column: column)
+                            .frame(width: 250)
+                            .id(column.id)
+                        Divider()
+                    }
+                }
+            }
+            .onChange(of: model.columns.count) {
+                guard let lastColumn = model.columns.last else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(lastColumn.id, anchor: .trailing)
+                }
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+    }
+}
+
+private struct ColumnView: View {
+    @ObservedObject var model: BrowserPaneModel
+    let column: BrowserColumn
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(column.directory.lastPathComponent.isEmpty ? column.directory.path : column.directory.lastPathComponent)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                Text(L10n.format("%lld items", Int64(column.items.count)))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+
+            Divider()
+
+            if column.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage = column.errorMessage {
+                ContentUnavailableView(
+                    "Folder unavailable",
+                    systemImage: "exclamationmark.folder",
+                    description: Text(errorMessage)
+                )
+            } else if model.displayedItems(from: column.items).isEmpty {
+                ContentUnavailableView(
+                    L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
+                    systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass"
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(model.displayedItems(from: column.items)) { item in
+                            ColumnItemRow(item: item, isSelected: column.selectedItemID == item.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    model.selectColumnItem(item, in: column.id)
+                                }
+                                .onTapGesture(count: 2) {
+                                    if !item.isDirectory {
+                                        model.open(item)
+                                    }
+                                }
+                                .contextMenu {
+                                    Button("Open") { model.open(item) }
+                                    Button("Quick Look") {
+                                        model.selection = [item.id]
+                                        model.previewSelection()
+                                    }
+                                    Button("Show in Finder") {
+                                        model.selection = [item.id]
+                                        model.revealSelectionInFinder()
+                                    }
+                                    Divider()
+                                    Button("Rename…") { model.renameTarget = item }
+                                    Button("Move to Trash", role: .destructive) {
+                                        model.selection = [item.id]
+                                        model.trashSelection()
+                                    }
+                                }
+                        }
+                    }
+                    .padding(4)
+                }
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
+private struct ColumnItemRow: View {
+    let item: FileItem
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(nsImage: item.icon)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 18, height: 18)
+            Text(item.name)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if item.isDirectory {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 7)
+        .frame(height: 28)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        )
     }
 }
 

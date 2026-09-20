@@ -26,6 +26,7 @@ PaneSpace is a fast, native, keyboard-friendly macOS file manager for people who
 - independent tabs and history;
 - favorites and mounted volumes;
 - filtering, sorting, and hidden-file visibility;
+- list and multi-level column browsing modes;
 - open, preview, reveal, create folder, rename, and Trash;
 - a provider boundary for later remote backends.
 - a settings center that distinguishes working preferences from planned capabilities.
@@ -43,7 +44,7 @@ PaneSpace is a fast, native, keyboard-friendly macOS file manager for people who
 - reliable copy and move queues with cancellation and conflict handling;
 - session and workspace restoration;
 - production-quality SFTP, SMB, and WebDAV providers;
-- list, grid, and gallery presentation modes;
+- list, column, grid, and gallery presentation modes;
 - accessible keyboard-first operation;
 - signed and notarized release builds with automated update metadata;
 - no unresolved known data-loss defects.

@@ -32,6 +32,8 @@ FileProviding protocol
 
 `PaneLayout` defines twelve arrangements using one to four persistent `BrowserPaneModel` instances. Changing a layout changes presentation only; each pane keeps its independent tabs, navigation history, selection, sorting, and search state. The primary pane receives extra space in asymmetric layouts using a 62/38 proportion.
 
+`BrowserViewMode` selects list or column presentation independently for each pane. Column navigation state is owned by `BrowserPaneModel`: each `BrowserColumn` is an immutable directory snapshot, while asynchronous child loading, selection, history, and cancellation remain in the state layer. Views render columns and forward user intent without accessing the file provider directly.
+
 Window chrome follows fixed density targets so layouts remain predictable: a 196-point default sidebar, 36-point tab strip, 36-point address bar, and 24-point status bar. These values are user-adjustable only where a setting has a clear accessibility or density benefit.
 
 ## Preferences

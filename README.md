@@ -11,6 +11,7 @@ PaneSpace is a clean-room, open-source macOS file manager focused on tabs and si
 - Native SwiftUI and AppKit interface
 - Twelve one-pane, split, asymmetric, row, column, and grid layouts
 - Multiple tabs in each pane
+- List and multi-level column browsing modes
 - Back, forward, and parent-folder navigation
 - Favorites and mounted-volume sidebar
 - Search and sorting
