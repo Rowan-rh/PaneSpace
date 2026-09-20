@@ -94,7 +94,7 @@ struct SidebarView: View {
     }
 
     private func locationRow(_ location: SidebarLocation) -> some View {
-        Label(location.title, systemImage: location.systemImage)
+        Label(L10n.text(location.title), systemImage: location.systemImage)
             .tag(location.id)
             .contentShape(Rectangle())
             .onTapGesture {
@@ -108,7 +108,7 @@ struct SidebarView: View {
             Circle()
                 .fill(color)
                 .frame(width: 9, height: 9)
-            Text(title)
+            Text(L10n.text(title))
             Spacer()
         }
         .foregroundStyle(.secondary)

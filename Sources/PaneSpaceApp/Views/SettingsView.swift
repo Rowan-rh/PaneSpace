@@ -42,26 +42,61 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var selection: SettingsCategory = .general
 
     var body: some View {
-        HStack(spacing: 0) {
-            List(SettingsCategory.allCases, selection: $selection) { category in
-                Label(category.rawValue, systemImage: category.systemImage)
-                    .tag(category)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Back to PaneSpace", systemImage: "chevron.backward")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Text("Settings")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close Settings")
+                .accessibilityLabel("Close Settings")
             }
-            .listStyle(.sidebar)
-            .frame(width: 188)
+            .padding(.horizontal, 16)
+            .frame(height: 46)
 
             Divider()
 
-            ScrollView {
-                detail
-                    .frame(maxWidth: 620, alignment: .topLeading)
-                    .padding(28)
+            HStack(spacing: 0) {
+                List(SettingsCategory.allCases, selection: $selection) { category in
+                    Label(L10n.text(category.rawValue), systemImage: category.systemImage)
+                        .tag(category)
+                }
+                .listStyle(.sidebar)
+                .frame(width: 188)
+
+                Divider()
+
+                ScrollView {
+                    detail
+                        .frame(maxWidth: 620, alignment: .topLeading)
+                        .padding(28)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
@@ -112,7 +147,7 @@ private struct GeneralSettingsPage: View {
                 SettingRow("Default pane layout") {
                     Picker("", selection: $defaultPaneLayout) {
                         ForEach(PaneLayout.allCases) { layout in
-                            Text(layout.title).tag(layout.rawValue)
+                            Text(L10n.text(layout.title)).tag(layout.rawValue)
                         }
                     }
                     .labelsHidden()
@@ -630,9 +665,9 @@ private struct SettingsPage<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
+                Text(L10n.text(title))
                     .font(.title2.bold())
-                Text(subtitle)
+                Text(L10n.text(subtitle))
                     .foregroundStyle(.secondary)
             }
             content
@@ -652,7 +687,7 @@ private struct SettingsGroup<Content: View>: View {
             }
             .padding(.vertical, 2)
         } label: {
-            Text(title)
+            Text(L10n.text(title))
                 .font(.headline)
         }
     }
@@ -672,9 +707,9 @@ private struct SettingRow<Control: View>: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(L10n.text(title))
                 if let detail {
-                    Text(detail)
+                    Text(L10n.text(detail))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -700,7 +735,7 @@ private struct SettingsToggle: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(title)
+            Text(L10n.text(title))
             if planned { PlannedBadge() }
             Spacer()
             Toggle("", isOn: $isOn)
@@ -730,7 +765,7 @@ private struct PlannedCallout: View {
         HStack(spacing: 10) {
             Image(systemName: "hammer")
                 .foregroundStyle(Color.accentColor)
-            Text(text)
+            Text(L10n.text(text))
                 .foregroundStyle(.secondary)
             Spacer()
             PlannedBadge()
@@ -746,7 +781,7 @@ private struct HotkeyRow: View {
 
     var body: some View {
         HStack {
-            Text(title)
+            Text(L10n.text(title))
             Spacer()
             Text(shortcut)
                 .font(.system(.body, design: .monospaced))
@@ -772,8 +807,8 @@ private struct PermissionRow: View {
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail)
+                Text(L10n.text(title))
+                Text(L10n.text(detail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -798,9 +833,9 @@ private struct ExtensionCard: View {
                 Spacer()
                 PlannedBadge()
             }
-            Text(title)
+            Text(L10n.text(title))
                 .font(.headline)
-            Text(detail)
+            Text(L10n.text(detail))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

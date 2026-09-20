@@ -24,13 +24,21 @@ open dist/PaneSpace.app
 ```text
 Sources/PaneSpaceApp/
   Models/       File metadata and navigation values
+  Resources/    Localized strings and bundled assets
   Services/     Providers and macOS integrations
   State/        Observable application and pane state
+  Support/      Shared application helpers
   Views/        SwiftUI presentation
 Tests/          Unit and integration tests
 docs/           Product, roadmap, and architecture decisions
 scripts/        Repeatable local build tooling
 ```
+
+## Localization
+
+English source strings are the development language. Simplified Chinese translations live in `Sources/PaneSpaceApp/Resources/zh-Hans.lproj/Localizable.strings`. Static SwiftUI labels use the standard localization lookup; strings passed through reusable views or model values use `L10n` so they remain localizable.
+
+The Swift package processes localization resources for source builds. `scripts/build-app.sh` also copies supported `.lproj` directories into the standalone application bundle. When adding a language, update both `CFBundleLocalizations` and the copied resource directories in that script, then launch the built app with that language during UI verification.
 
 ## Adding a provider
 
@@ -50,6 +58,7 @@ The current `FileProviding` protocol is deliberately small and synchronous for t
 - resize the window to its minimum dimensions;
 - test keyboard navigation and VoiceOver labels for changed controls;
 - verify long file names and non-Latin names;
+- verify the English and Simplified Chinese interfaces, including the settings close controls;
 - test empty folders, permission failures, disconnected volumes, and large directories.
 
 ## Release outline

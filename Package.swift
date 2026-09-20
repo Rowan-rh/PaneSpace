@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PaneSpace",
+    defaultLocalization: "en",
     platforms: [
         .macOS("26.0")
     ],
@@ -12,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PaneSpaceApp",
-            path: "Sources/PaneSpaceApp"
+            path: "Sources/PaneSpaceApp",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "PaneSpaceTests",

@@ -102,9 +102,9 @@ struct BrowserPaneView: View {
             )
         } else if model.visibleItems.isEmpty {
             ContentUnavailableView(
-                model.searchText.isEmpty ? "Empty folder" : "No results",
+                L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                 systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
-                description: Text(model.searchText.isEmpty ? "There are no items here." : "Try another search term.")
+                description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
             )
         } else {
             FileListView(model: model, compact: appModel.paneLayout.prefersCompactRows)
@@ -289,17 +289,19 @@ private struct PathBarView: View {
                     model.setSort(option)
                 } label: {
                     if model.sort == option {
-                        Label(option.rawValue, systemImage: model.sortAscending ? "arrow.up" : "arrow.down")
+                        Label(L10n.text(option.rawValue), systemImage: model.sortAscending ? "arrow.up" : "arrow.down")
                     } else {
-                        Text(option.rawValue)
+                        Text(L10n.text(option.rawValue))
                     }
                 }
             }
 
             Divider()
 
-            Button(model.showsHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files") {
+            Button {
                 model.toggleHiddenFiles()
+            } label: {
+                Text(L10n.text(model.showsHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files"))
             }
         } label: {
             Image(systemName: "line.3.horizontal.decrease.circle")
@@ -477,15 +479,15 @@ private struct StatusBarView: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Text("\(model.visibleItems.count) items")
+            Text(L10n.format("%lld items", Int64(model.visibleItems.count)))
             if !model.selection.isEmpty {
                 Text("•")
-                Text("\(model.selection.count) selected")
+                Text(L10n.format("%lld selected", Int64(model.selection.count)))
             }
 
             if let freeSpace {
                 Text("•")
-                Text("\(ByteCountFormatter.string(fromByteCount: freeSpace, countStyle: .file)) available")
+                Text(L10n.format("%@ available", ByteCountFormatter.string(fromByteCount: freeSpace, countStyle: .file)))
             }
 
             Spacer()
