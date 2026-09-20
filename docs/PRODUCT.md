@@ -22,12 +22,13 @@ PaneSpace is a fast, native, keyboard-friendly macOS file manager for people who
 
 ## Version 0.1 scope
 
-- single-pane and dual-pane browsing;
+- twelve single-pane, split, asymmetric, and grid layouts using up to four panes;
 - independent tabs and history;
 - favorites and mounted volumes;
 - filtering, sorting, and hidden-file visibility;
 - open, preview, reveal, create folder, rename, and Trash;
 - a provider boundary for later remote backends.
+- a settings center that distinguishes working preferences from planned capabilities.
 
 ## Explicit non-goals for 0.1
 

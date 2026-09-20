@@ -5,12 +5,13 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 ## 0.1 — Local browsing foundation
 
 - [x] Native macOS application shell
-- [x] Dual-pane and single-pane layouts
+- [x] Twelve layouts for one to four panes
 - [x] Independent tabs and navigation history
 - [x] Favorites and mounted volumes
 - [x] Search, sort, and hidden files
 - [x] Create folder, rename, Trash, Quick Look, and Finder reveal
 - [x] Local provider boundary and initial tests
+- [x] Native settings center and live appearance controls
 - [ ] Persist window, pane, and tab state
 - [ ] Add CI for build and tests
 

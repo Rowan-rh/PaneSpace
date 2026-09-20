@@ -13,10 +13,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var sort: FileSort = .name
     @Published var sortAscending = true
     @Published var showsHiddenFiles = false
+    @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var renameTarget: FileItem?
 
     private let provider: FileProviding
+    private var refreshTask: Task<Void, Never>?
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser, provider: FileProviding = LocalFileProvider()) {
         let tab = BrowserTab(url: url)
@@ -132,14 +134,32 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func refresh() {
-        do {
-            items = try provider.contents(of: currentURL, showsHiddenFiles: showsHiddenFiles)
-            selection = selection.intersection(Set(items.map(\.id)))
-            errorMessage = nil
-        } catch {
-            items = []
-            selection = []
-            errorMessage = error.localizedDescription
+        let directory = currentURL
+        let showsHiddenFiles = showsHiddenFiles
+        let provider = provider
+
+        refreshTask?.cancel()
+        isLoading = true
+        refreshTask = Task {
+            do {
+                let refreshedItems = try await Task.detached(priority: .userInitiated) {
+                    try provider.contents(of: directory, showsHiddenFiles: showsHiddenFiles)
+                }.value
+
+                guard !Task.isCancelled, currentURL == directory else { return }
+                items = refreshedItems
+                selection = selection.intersection(Set(refreshedItems.map(\.id)))
+                isLoading = false
+                errorMessage = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, currentURL == directory else { return }
+                items = []
+                selection = []
+                isLoading = false
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

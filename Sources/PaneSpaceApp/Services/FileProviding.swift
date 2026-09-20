@@ -1,13 +1,15 @@
 import Foundation
 
-protocol FileProviding {
+protocol FileProviding: Sendable {
     func contents(of directory: URL, showsHiddenFiles: Bool) throws -> [FileItem]
     func createFolder(named name: String, in directory: URL) throws -> URL
     func rename(_ item: URL, to newName: String) throws -> URL
     func moveToTrash(_ item: URL) throws
 }
 
-struct LocalFileProvider: FileProviding {
+// FileManager documents its methods as safe to call from multiple threads. The instance is
+// immutable here, so the provider can cross the task boundary used for directory loading.
+struct LocalFileProvider: FileProviding, @unchecked Sendable {
     private let fileManager: FileManager
 
     init(fileManager: FileManager = .default) {
