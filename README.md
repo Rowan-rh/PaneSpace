@@ -1,83 +1,89 @@
 # PaneSpace
 
-<img src="Assets/PaneSpace-AppIcon.png" alt="PaneSpace app icon" width="112" />
+[简体中文](README.md) · [English](README.en.md)
 
-PaneSpace is a clean-room, open-source macOS file manager focused on tabs and side-by-side workflows. It uses only public Apple APIs and does not contain code or assets from any commercial file manager.
+<img src="Assets/PaneSpace-AppIcon.png" alt="PaneSpace 应用图标" width="112" />
 
-![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-black)
+PaneSpace 是一款面向 macOS 的原生、开源文件管理器，专注于标签页和并排多分栏工作流。项目采用全新独立实现，仅使用 Apple 公开 API，不包含任何商业文件管理器的代码或资源。
+
+![平台](https://img.shields.io/badge/platform-macOS%2026%2B-black)
 ![Swift](https://img.shields.io/badge/Swift-6.2%2B-orange)
-![License](https://img.shields.io/badge/license-MIT-blue)
+![许可证](https://img.shields.io/badge/license-MIT-blue)
 
-## Current features
+## 当前功能
 
-- Native SwiftUI and AppKit interface
-- Twelve one-pane, split, asymmetric, row, column, and grid layouts
-- Multiple tabs in each pane
-- List and multi-level column browsing modes
-- Back, forward, and parent-folder navigation
-- Favorites and mounted-volume sidebar
-- Search and sorting
-- Hidden-file toggle
-- Create folders and rename items
-- Move items to Trash
-- Quick Look with the Space key
-- Open files with their default application
-- Reveal files in Finder
-- Local file-provider abstraction for future remote backends
-- Native settings center with live appearance, density, sidebar, address-bar, and pane controls
-- English and Simplified Chinese interface localization
-- Clearly marked configuration shells for planned search, extensions, hotkeys, and remote providers
+- 原生 SwiftUI 与 AppKit 界面
+- 12 种单栏、双栏、非对称、横向、纵向及网格布局
+- 每个分栏均可使用多个标签页
+- 列表和多级分栏浏览模式
+- 后退、前进和返回上级目录
+- 收藏夹与已挂载磁盘侧边栏
+- 文件搜索和排序
+- 显示或隐藏隐藏文件
+- 新建文件夹和重命名项目
+- 将项目移到废纸篓
+- 使用空格键快速预览
+- 使用默认应用打开文件
+- 在访达中显示文件
+- 本地文件提供器抽象，为后续远程存储支持预留扩展能力
+- 原生设置中心，可实时调整外观、内容密度、侧边栏、地址栏和分栏
+- 英文与简体中文界面；默认跟随 macOS 的语言设置
+- 为后续搜索、扩展、快捷键和远程存储功能提供清晰标注的配置入口
 
-## Requirements
+## 系统要求
 
-- macOS 26 or newer
-- Xcode 26 or newer, or a compatible Swift 6.2 toolchain
+- macOS 26 或更高版本
+- Xcode 26 或更高版本，或兼容 Swift 6.2 的工具链
 
-## Run from source
+## 从源码运行
+
+在项目目录中运行：
 
 ```bash
 swift run PaneSpace
 ```
 
-Run tests:
+运行测试：
 
 ```bash
 swift test
 ```
 
-Build a standalone application bundle:
+构建可独立打开的应用包：
 
 ```bash
 make app
 open dist/PaneSpace.app
 ```
 
-The generated app is ad-hoc signed for local development.
+本地构建的应用会使用临时签名，适合开发和测试。首次访问文件夹时，macOS 可能会要求授权；PaneSpace 会通过系统提供的安全书签保存用户已选择目录的访问权限。
 
-## Roadmap
+## 开发路线
 
-1. Drag and drop, copy and move queues, conflict handling
-2. Grid and gallery views
-3. Saved workspaces and session restoration
-4. SFTP, SMB, and WebDAV providers
-5. Archive browsing and compression
-6. Git status decorations and Finder extension
-7. Plug-in API and command palette
+1. 拖放、复制与移动任务队列，以及文件冲突处理
+2. 网格和画廊视图
+3. 工作区保存与会话恢复
+4. SFTP、SMB 和 WebDAV 存储提供器
+5. 压缩文件浏览、压缩与解压
+6. Git 状态标记与访达扩展
+7. 插件 API 与命令面板
 
-## Project documentation
+## 项目文档
 
-- [Product definition](docs/PRODUCT.md)
-- [Architecture](ARCHITECTURE.md)
-- [Development guide](docs/DEVELOPMENT.md)
-- [Roadmap](docs/ROADMAP.md)
-- [Architecture decisions](docs/adr)
-- [Security policy](docs/SECURITY.md)
-- [Agent and contributor rules](AGENTS.md)
+目前架构与开发文档以英文维护，便于代码术语保持一致；用户说明与仓库首页提供完整中文内容。
 
-## Contributing
+- [产品定义](docs/PRODUCT.md)
+- [架构设计](ARCHITECTURE.md)
+- [开发指南](docs/DEVELOPMENT.md)
+- [开发路线](docs/ROADMAP.md)
+- [架构决策记录](docs/adr)
+- [安全策略](docs/SECURITY.md)
+- [开发代理与贡献规范](AGENTS.md)
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before making a change. Please keep provider-specific logic out of views and add tests for file operations.
+## 参与贡献
 
-## License
+欢迎提交 Issue 和 Pull Request。开始修改前，请阅读 [贡献指南](CONTRIBUTING.md) 与 [开发规范](AGENTS.md)。请将存储提供器相关逻辑放在视图层之外，并为文件操作补充测试。
 
-PaneSpace is available under the MIT License.
+## 许可证
+
+PaneSpace 基于 MIT License 开源。
