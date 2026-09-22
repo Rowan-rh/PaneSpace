@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct FileItem: Identifiable, Hashable {
+struct FileItem: Identifiable, Hashable, Sendable {
     let url: URL
     let isDirectory: Bool
     let isHidden: Bool
@@ -22,8 +22,8 @@ struct FileItem: Identifiable, Hashable {
         return Self.dateFormatter.string(from: modificationDate)
     }
 
-    var icon: NSImage {
-        NSWorkspace.shared.icon(forFile: url.path)
+    @MainActor var icon: NSImage {
+        FileIconCache.shared.image(for: url)
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -34,7 +34,25 @@ struct FileItem: Identifiable, Hashable {
     }()
 }
 
-enum FileSort: String, CaseIterable, Identifiable {
+@MainActor
+private final class FileIconCache {
+    static let shared = FileIconCache()
+
+    private let images = NSCache<NSURL, NSImage>()
+
+    func image(for url: URL) -> NSImage {
+        let key = url as NSURL
+        if let cached = images.object(forKey: key) {
+            return cached
+        }
+
+        let image = NSWorkspace.shared.icon(forFile: url.path)
+        images.setObject(image, forKey: key)
+        return image
+    }
+}
+
+enum FileSort: String, CaseIterable, Identifiable, Codable, Sendable {
     case name = "Name"
     case date = "Modified"
     case size = "Size"

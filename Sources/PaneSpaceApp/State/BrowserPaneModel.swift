@@ -17,21 +17,52 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var columns: [BrowserColumn] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var operationErrorMessage: String?
+    @Published var isPerformingOperation = false
+    @Published var availableCapacity: Int64?
     @Published var renameTarget: FileItem?
 
     private let provider: FileProviding
     private var refreshTask: Task<Void, Never>?
     private var columnLoadTask: Task<Void, Never>?
+    private var operationTask: Task<Void, Never>?
 
-    init(url: URL = FileManager.default.homeDirectoryForCurrentUser, provider: FileProviding = LocalFileProvider()) {
-        let tab = BrowserTab(url: url)
-        self.tabs = [tab]
-        self.activeTabID = tab.id
+    init(
+        url: URL = FileManager.default.homeDirectoryForCurrentUser,
+        provider: FileProviding = LocalFileProvider(),
+        session: BrowserPaneSession? = nil
+    ) {
+        let fallbackTab = BrowserTab(url: url)
+        let restoredTabs = if let session, !session.tabs.isEmpty {
+            session.tabs
+        } else {
+            [fallbackTab]
+        }
+        self.tabs = restoredTabs
+        if let session, restoredTabs.contains(where: { $0.id == session.activeTabID }) {
+            self.activeTabID = session.activeTabID
+        } else {
+            self.activeTabID = restoredTabs[0].id
+        }
         self.provider = provider
-        self.viewMode = BrowserViewMode(
+        self.viewMode = session?.viewMode ?? BrowserViewMode(
             rawValue: UserDefaults.standard.string(forKey: "defaultViewMode") ?? "list"
         ) ?? .list
+        self.showsHiddenFiles = session?.showsHiddenFiles ?? false
+        self.sort = session?.sort ?? .name
+        self.sortAscending = session?.sortAscending ?? true
         refresh()
+    }
+
+    var session: BrowserPaneSession {
+        BrowserPaneSession(
+            tabs: tabs,
+            activeTabID: activeTabID,
+            viewMode: viewMode,
+            showsHiddenFiles: showsHiddenFiles,
+            sort: sort,
+            sortAscending: sortAscending
+        )
     }
 
     var activeTab: BrowserTab {
@@ -53,7 +84,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     var selectedItems: [FileItem] {
-        let availableItems = columns.flatMap(\.items) + items
+        let availableItems = viewMode == .columns ? columns.flatMap(\.items) : items
         return Array(Dictionary(grouping: availableItems, by: \.id).compactMap { _, values in
             values.first(where: { selection.contains($0.id) })
         })
@@ -93,12 +124,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         UserDefaults.standard.set(mode.rawValue, forKey: "defaultViewMode")
         if mode == .columns, columns.isEmpty {
             columns = [BrowserColumn(directory: currentURL, items: items, selectedItemID: nil, isLoading: false, errorMessage: nil)]
+        } else if mode == .list {
+            selection.formIntersection(Set(items.map(\.id)))
         }
     }
 
     func selectColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID) {
         guard let index = columns.firstIndex(where: { $0.id == columnID }) else { return }
 
+        refreshTask?.cancel()
         columnLoadTask?.cancel()
         columns[index].selectedItemID = item.id
         if columns.count > index + 1 {
@@ -106,7 +140,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
         selection = [item.id]
 
-        guard item.isDirectory else { return }
+        guard item.isDirectory else {
+            let directory = columns[index].directory.standardizedFileURL
+            updateActiveTabURL(directory)
+            items = columns[index].items
+            isLoading = false
+            errorMessage = columns[index].errorMessage
+            return
+        }
 
         var tab = activeTab
         if tab.url != item.url {
@@ -126,9 +167,10 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let provider = provider
         columnLoadTask = Task {
             do {
-                let loadedItems = try await Task.detached(priority: .userInitiated) {
-                    try provider.contents(of: directory, showsHiddenFiles: showsHiddenFiles)
-                }.value
+                let loadedItems = try await provider.contents(
+                    of: directory,
+                    showsHiddenFiles: showsHiddenFiles
+                )
 
                 guard !Task.isCancelled,
                       let lastIndex = columns.indices.last,
@@ -222,12 +264,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let provider = provider
 
         refreshTask?.cancel()
+        columnLoadTask?.cancel()
         isLoading = true
         refreshTask = Task {
             do {
-                let refreshedItems = try await Task.detached(priority: .userInitiated) {
-                    try provider.contents(of: directory, showsHiddenFiles: showsHiddenFiles)
-                }.value
+                let refreshedItems = try await provider.contents(
+                    of: directory,
+                    showsHiddenFiles: showsHiddenFiles
+                )
 
                 guard !Task.isCancelled, currentURL == directory else { return }
                 items = refreshedItems
@@ -243,6 +287,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selection = selection.intersection(Set(refreshedItems.map(\.id)))
                 isLoading = false
                 errorMessage = nil
+                let capacity = await provider.availableCapacity(for: directory)
+                guard !Task.isCancelled, currentURL == directory else { return }
+                availableCapacity = capacity
             } catch is CancellationError {
                 return
             } catch {
@@ -260,6 +307,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selection = []
                 isLoading = false
                 errorMessage = error.localizedDescription
+                availableCapacity = nil
             }
         }
     }
@@ -270,39 +318,83 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func createFolder(named name: String) {
-        do {
-            let folder = try provider.createFolder(named: name, in: currentURL)
-            refresh()
-            selection = [folder]
-        } catch {
-            errorMessage = error.localizedDescription
+        guard !isPerformingOperation else { return }
+        let directory = currentURL
+        let provider = provider
+        beginOperation()
+        operationTask = Task {
+            do {
+                let folder = try await provider.createFolder(named: name, in: directory)
+                guard !Task.isCancelled else { return }
+                finishOperation()
+                refresh()
+                selection = [folder]
+            } catch is CancellationError {
+                finishOperation()
+            } catch {
+                finishOperation(error: error)
+            }
         }
     }
 
     func rename(_ item: FileItem, to newName: String) {
-        do {
-            let destination = try provider.rename(item.url, to: newName)
-            if currentURL.standardizedFileURL == item.url.standardizedFileURL {
-                var tab = activeTab
-                tab.url = destination
-                activeTab = tab
+        guard !isPerformingOperation else { return }
+        let provider = provider
+        beginOperation()
+        operationTask = Task {
+            do {
+                let destination = try await provider.rename(item.url, to: newName)
+                guard !Task.isCancelled else { return }
+                finishOperation()
+                remapTabs(from: item.url, to: destination)
+                refresh()
+                selection = destination.deletingLastPathComponent().standardizedFileURL == currentURL.standardizedFileURL
+                    ? [destination]
+                    : []
+            } catch is CancellationError {
+                finishOperation()
+            } catch {
+                finishOperation(error: error)
             }
-            refresh()
-            selection = [destination]
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
     func trashSelection() {
-        do {
-            for item in selectedItems {
-                try provider.moveToTrash(item.url)
+        guard !isPerformingOperation else { return }
+        let items = selectedItems
+        guard !items.isEmpty else { return }
+        let provider = provider
+        beginOperation()
+        operationTask = Task {
+            var failures: [Error] = []
+            for item in items {
+                guard !Task.isCancelled else { break }
+                do {
+                    try await provider.moveToTrash(item.url)
+                } catch {
+                    failures.append(error)
+                }
             }
+            guard !Task.isCancelled else {
+                finishOperation()
+                return
+            }
+            isPerformingOperation = false
             refresh()
-        } catch {
-            errorMessage = error.localizedDescription
+            if let firstFailure = failures.first {
+                operationErrorMessage = L10n.format(
+                    "%lld items could not be moved to the Trash: %@",
+                    Int64(failures.count),
+                    firstFailure.localizedDescription
+                )
+            } else {
+                operationErrorMessage = nil
+            }
         }
+    }
+
+    func dismissOperationError() {
+        operationErrorMessage = nil
     }
 
     func previewSelection() {
@@ -342,5 +434,54 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         case (_?, nil):
             return .orderedAscending
         }
+    }
+
+    private func beginOperation() {
+        operationErrorMessage = nil
+        isPerformingOperation = true
+    }
+
+    private func finishOperation(error: Error? = nil) {
+        isPerformingOperation = false
+        operationErrorMessage = error?.localizedDescription
+    }
+
+    private func updateActiveTabURL(_ url: URL) {
+        let standardizedURL = url.standardizedFileURL
+        var tab = activeTab
+        guard tab.url.standardizedFileURL != standardizedURL else { return }
+        tab.backHistory.append(tab.url)
+        tab.forwardHistory.removeAll()
+        tab.url = standardizedURL
+        activeTab = tab
+    }
+
+    private func remapTabs(from source: URL, to destination: URL) {
+        tabs = tabs.map { tab in
+            var updatedTab = tab
+            updatedTab.url = remapping(tab.url, from: source, to: destination)
+            updatedTab.backHistory = tab.backHistory.map {
+                remapping($0, from: source, to: destination)
+            }
+            updatedTab.forwardHistory = tab.forwardHistory.map {
+                remapping($0, from: source, to: destination)
+            }
+            return updatedTab
+        }
+    }
+
+    private func remapping(_ url: URL, from source: URL, to destination: URL) -> URL {
+        let standardizedURL = url.standardizedFileURL
+        let standardizedSource = source.standardizedFileURL
+        let standardizedDestination = destination.standardizedFileURL
+        guard standardizedURL == standardizedSource ||
+                standardizedURL.path.hasPrefix(standardizedSource.path + "/") else {
+            return url
+        }
+
+        let relativePath = String(standardizedURL.path.dropFirst(standardizedSource.path.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !relativePath.isEmpty else { return standardizedDestination }
+        return standardizedDestination.appendingPathComponent(relativePath, isDirectory: true)
     }
 }

@@ -13,8 +13,9 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [x] Local provider boundary and initial tests
 - [x] Native settings center and live appearance controls
 - [x] List and multi-level column browsing modes
-- [ ] Persist window, pane, and tab state
-- [ ] Add CI for build and tests
+- [x] Persist pane layout, active pane, tabs, and navigation history
+- [x] Persist window placement and dimensions
+- [x] Add CI for build and tests
 
 ## 0.2 — Reliable file operations
 

@@ -17,7 +17,7 @@ make app
 open dist/PaneSpace.app
 ```
 
-`make app` produces an ad-hoc signed development bundle. Public releases will use Developer ID signing, notarization, and release automation added in a later milestone.
+`make app` produces an ad-hoc signed development bundle. Its generated Info.plist includes localized usage descriptions for protected folders and external volumes so macOS can present standard access prompts. Public releases will use Developer ID signing, notarization, and release automation added in a later milestone.
 
 ## Repository layout
 
@@ -53,7 +53,7 @@ The editable raster master is `Assets/PaneSpace-AppIcon.png`; the generated macO
 5. Write provider contract tests using a deterministic fixture or local test server.
 6. Update `ARCHITECTURE.md` and add an ADR when the provider changes shared contracts.
 
-The current `FileProviding` protocol is deliberately small and synchronous for the local MVP. Do not force remote I/O into this shape. The protocol should evolve to an asynchronous capability-oriented interface before the first remote provider lands.
+The current `FileProviding` protocol is deliberately small and asynchronous. The local actor keeps blocking `FileManager` calls away from the main actor. Add capability reporting, progress, and provider-specific cancellation before the first remote provider lands; do not put those concerns in SwiftUI views.
 
 ## UI verification checklist
 

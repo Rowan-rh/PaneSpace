@@ -1,7 +1,15 @@
+import AppKit
 import SwiftUI
+
+final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
 
 @main
 struct PaneSpaceApp: App {
+    @NSApplicationDelegateAdaptor(PaneSpaceApplicationDelegate.self) private var applicationDelegate
     @StateObject private var appModel = AppModel()
 
     var body: some Scene {
@@ -22,7 +30,15 @@ struct PaneSpaceApp: App {
                 Button("New Folder") {
                     appModel.requestNewFolder()
                 }
+                .disabled(appModel.activePaneModel.isPerformingOperation)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Close Window") {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+                .keyboardShortcut("w", modifiers: .command)
 
                 Divider()
 

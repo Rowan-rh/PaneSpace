@@ -36,13 +36,15 @@ FileProviding protocol
 
 Window chrome follows fixed density targets so layouts remain predictable: a 196-point default sidebar, 36-point tab strip, 36-point address bar, and 24-point status bar. These values are user-adjustable only where a setting has a clear accessibility or density benefit.
 
+The main window uses AppKit frame autosave for placement and dimensions. Workspace content is persisted separately in `AppSession`, so window-system state does not become part of the workspace schema.
+
 ## Preferences
 
-The Settings scene uses `AppStorage` for lightweight user preferences. Options that are already connected update open windows immediately. Planned capabilities are visibly marked rather than silently pretending to work. Preferences that grow into structured data, such as workspaces, hotkeys, providers, or contextual-menu definitions, must move to versioned models instead of accumulating independent keys.
+The Settings scene uses `AppStorage` for lightweight user preferences. Options that are already connected update open windows immediately. Planned capabilities are visibly marked rather than silently pretending to work. Pane layout, active pane, tabs, navigation history, view mode, hidden-file visibility, and sorting are stored together in the versioned `AppSession` model. Other preferences that grow into structured data, such as workspaces, hotkeys, providers, or contextual-menu definitions, must also move to versioned models instead of accumulating independent keys.
 
 ## Provider contract
 
-The first implementation uses synchronous local operations to keep the MVP small. Remote providers should evolve the contract toward asynchronous, cancellable operations and expose capabilities such as rename, trash, server-side copy, and thumbnails.
+Provider primitives are asynchronous. The local provider is actor-isolated so directory reads and file mutations do not block the main actor. Providers normalize common failures such as permission denial, missing items, invalid names, and name conflicts before errors reach pane state. Future remote providers should add cancellation and expose capabilities such as rename, trash, server-side copy, and thumbnails.
 
 Each provider should eventually report:
 
@@ -55,7 +57,7 @@ Each provider should eventually report:
 
 ## File-operation engine
 
-Copying and moving should be implemented as queued jobs rather than direct view actions. Jobs should support progress, cancellation, retry, conflict decisions, and an operation journal. Local jobs can use `FileManager`; remote jobs delegate to providers.
+Current local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. Copying and moving should be implemented as queued jobs rather than direct view actions. Jobs should support progress, cancellation, retry, conflict decisions, and an operation journal. Local jobs can use `FileManager`; remote jobs delegate to providers.
 
 ## Security model
 
@@ -67,4 +69,4 @@ PaneSpace is implemented from public platform behavior and Apple documentation. 
 
 ## Planned evolution
 
-The next architectural step is an operation engine described in [ADR 0003](docs/adr/0003-operation-queue.md). After that boundary is stable, `FileProviding` will evolve into an asynchronous capability-oriented provider API before remote backends are added.
+The next architectural step is the operation engine described in [ADR 0003](docs/adr/0003-operation-queue.md). The asynchronous primitive boundary is recorded in [ADR 0004](docs/adr/0004-async-provider-primitives.md), and session persistence in [ADR 0005](docs/adr/0005-versioned-session-state.md). Capability reporting and remote-specific cancellation remain to be added before remote backends.

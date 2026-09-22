@@ -134,7 +134,10 @@ private struct GeneralSettingsPage: View {
     var body: some View {
         SettingsPage(title: "General", subtitle: "Startup, workspace, and window behavior.") {
             SettingsGroup(title: "Startup") {
-                SettingRow("Startup location", detail: "Used when no restorable workspace is available.") {
+                SettingRow(
+                    "Startup location",
+                    detail: "Used when no restorable workspace is available."
+                ) {
                     Picker("", selection: $startupLocation) {
                         Text("Home").tag("home")
                         Text("Downloads").tag("downloads")
@@ -155,13 +158,13 @@ private struct GeneralSettingsPage: View {
                 }
 
                 SettingsToggle("Restore the previous session", isOn: $restoreLastSession)
-                SettingsToggle("Keep recent locations and files", isOn: $keepRecentLocations)
+                SettingsToggle("Keep recent locations and files", isOn: $keepRecentLocations, planned: true)
             }
 
             SettingsGroup(title: "Windows and Workspaces") {
-                SettingsToggle("Open workspaces in tabs", isOn: $openWorkspaceInTab)
+                SettingsToggle("Open workspaces in tabs", isOn: $openWorkspaceInTab, planned: true)
                 SettingsToggle("Show the bottom status bar", isOn: $showStatusBar)
-                SettingsToggle("Ask before quitting", isOn: $confirmQuit)
+                SettingsToggle("Ask before quitting", isOn: $confirmQuit, planned: true)
             }
         }
     }
@@ -255,7 +258,7 @@ private struct BehaviorSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Behaviors", subtitle: "Choose how browsing and file interactions respond.") {
             SettingsGroup(title: "Keyboard and Mouse") {
-                SettingRow("Typing in a file list") {
+                SettingRow("Typing in a file list", planned: true) {
                     Picker("", selection: $keyResponse) {
                         Text("Select").tag("select")
                         Text("Filter").tag("filter")
@@ -265,7 +268,7 @@ private struct BehaviorSettingsPage: View {
                     .frame(width: 150)
                 }
 
-                SettingRow("Double-click empty space") {
+                SettingRow("Double-click empty space", planned: true) {
                     Picker("", selection: $blankDoubleClickAction) {
                         Text("Go Up").tag("up")
                         Text("Go Back").tag("back")
@@ -275,8 +278,8 @@ private struct BehaviorSettingsPage: View {
                     .frame(width: 150)
                 }
 
-                SettingsToggle("Open folders in a new tab", isOn: $openFoldersInNewTab)
-                SettingsToggle("Confirm drag and drop operations", isOn: $confirmDragAndDrop)
+                SettingsToggle("Open folders in a new tab", isOn: $openFoldersInNewTab, planned: true)
+                SettingsToggle("Confirm drag and drop operations", isOn: $confirmDragAndDrop, planned: true)
             }
 
             SettingsGroup(title: "Folder Browsing") {
@@ -329,7 +332,11 @@ private struct SidebarSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Sidebar", subtitle: "Choose the groups shown next to the workspace.") {
             SettingsGroup(title: "Placement") {
-                SettingRow("Default position", detail: "Right placement is reserved for a later window model.") {
+                SettingRow(
+                    "Default position",
+                    detail: "Right placement is reserved for a later window model.",
+                    planned: true
+                ) {
                     Picker("", selection: $sidebarPosition) {
                         Text("Left").tag("left")
                         Text("Right — Planned").tag("right")
@@ -358,7 +365,7 @@ private struct TabSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Tabs", subtitle: "Configure tab creation and restoration.") {
             SettingsGroup(title: "New Tabs") {
-                SettingRow("Insert new tabs") {
+                SettingRow("Insert new tabs", planned: true) {
                     Picker("", selection: $newTabPosition) {
                         Text("After Current").tag("afterCurrent")
                         Text("At End").tag("end")
@@ -391,15 +398,19 @@ private struct FileListSettingsPage: View {
                 SettingRow("Default view") {
                     Picker("", selection: $defaultViewMode) {
                         Text("List").tag("list")
-                        Text("Icons — Planned").tag("icons")
+                        Text("Icons — Planned").tag("icons").disabled(true)
                         Text("Columns").tag("columns")
-                        Text("Gallery — Planned").tag("gallery")
+                        Text("Gallery — Planned").tag("gallery").disabled(true)
                     }
                     .labelsHidden()
                     .frame(width: 160)
                 }
 
-                SettingRow("Icon size", detail: "Used by the planned icon and gallery views.") {
+                SettingRow(
+                    "Icon size",
+                    detail: "Used by the planned icon and gallery views.",
+                    planned: true
+                ) {
                     Slider(value: $iconSize, in: 16 ... 96, step: 4)
                         .frame(width: 180)
                 }
@@ -433,7 +444,7 @@ private struct SearchSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Search", subtitle: "Set defaults for pane filtering and indexed search.") {
             SettingsGroup(title: "Scope") {
-                SettingRow("Default scope") {
+                SettingRow("Default scope", planned: true) {
                     Picker("", selection: $searchScope) {
                         Text("Current Folder").tag("current")
                         Text("Subfolders — Planned").tag("recursive")
@@ -442,7 +453,7 @@ private struct SearchSettingsPage: View {
                     .labelsHidden()
                     .frame(width: 170)
                 }
-                SettingsToggle("Filter while typing", isOn: $searchWhileTyping)
+                SettingsToggle("Filter while typing", isOn: $searchWhileTyping, planned: true)
                 SettingsToggle("Search file contents", isOn: $searchContents, planned: true)
                 SettingsToggle("Include hidden items", isOn: $searchHiddenItems, planned: true)
             }
@@ -461,10 +472,10 @@ private struct ContextMenuSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Context Menu", subtitle: "Choose the commands shown for files and folders.") {
             SettingsGroup(title: "Built-in Items") {
-                SettingsToggle("Quick Look", isOn: $contextQuickLook)
-                SettingsToggle("Show in Finder", isOn: $contextShowFinder)
-                SettingsToggle("Rename", isOn: $contextRename)
-                SettingsToggle("Move to Trash", isOn: $contextTrash)
+                SettingsToggle("Quick Look", isOn: $contextQuickLook, planned: true)
+                SettingsToggle("Show in Finder", isOn: $contextShowFinder, planned: true)
+                SettingsToggle("Rename", isOn: $contextRename, planned: true)
+                SettingsToggle("Move to Trash", isOn: $contextTrash, planned: true)
                 SettingsToggle("Copy Path", isOn: $contextCopyPath, planned: true)
                 SettingsToggle("macOS Services", isOn: $contextServices, planned: true)
             }
@@ -501,7 +512,7 @@ private struct QuickLaunchSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Quick Launch", subtitle: "Prepare external tools for the active folder.") {
             SettingsGroup(title: "Default Applications") {
-                SettingRow("Terminal") {
+                SettingRow("Terminal", planned: true) {
                     Picker("", selection: $preferredTerminal) {
                         Text("Terminal").tag("Terminal")
                         Text("iTerm").tag("iTerm")
@@ -512,7 +523,7 @@ private struct QuickLaunchSettingsPage: View {
                     .frame(width: 170)
                 }
 
-                SettingRow("Code editor") {
+                SettingRow("Code editor", planned: true) {
                     Picker("", selection: $preferredEditor) {
                         Text("Visual Studio Code").tag("Visual Studio Code")
                         Text("Xcode").tag("Xcode")
@@ -595,8 +606,8 @@ private struct AdvancedSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Advanced", subtitle: "Development, diagnostics, and reset controls.") {
             SettingsGroup(title: "Updates and Diagnostics") {
-                SettingsToggle("Include beta updates", isOn: $betaUpdates)
-                SettingsToggle("Diagnostic logging", isOn: $diagnosticLogging)
+                SettingsToggle("Include beta updates", isOn: $betaUpdates, planned: true)
+                SettingsToggle("Diagnostic logging", isOn: $diagnosticLogging, planned: true)
             }
 
             SettingsGroup(title: "Defaults") {
@@ -618,17 +629,7 @@ private struct AdvancedSettingsPage: View {
     }
 
     private func resetDefaults() {
-        let keys = [
-            "startupLocation", "restoreLastSession", "openWorkspaceInTab", "keepRecentLocations",
-            "confirmQuit", "showStatusBar", "defaultPaneLayout", "accentColor", "themeIntensity",
-            "sidebarWidth", "rowDensity", "pinnedTabStyle", "paneCloseButton", "keyResponse",
-            "blankDoubleClickAction", "openFoldersInNewTab", "confirmDragAndDrop", "addressBarPosition",
-            "showPaneNavigation", "showAddressReload", "showAddressActions", "showToolbarNavigation",
-            "showWorkspaceGroup", "showVolumesGroup", "showTagsGroup", "alternateRowBackgrounds"
-        ]
-        for key in keys {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
+        PaneSpacePreferences.reset()
     }
 }
 
@@ -697,11 +698,18 @@ private struct SettingsGroup<Content: View>: View {
 private struct SettingRow<Control: View>: View {
     let title: String
     let detail: String?
+    let planned: Bool
     @ViewBuilder let control: Control
 
-    init(_ title: String, detail: String? = nil, @ViewBuilder control: () -> Control) {
+    init(
+        _ title: String,
+        detail: String? = nil,
+        planned: Bool = false,
+        @ViewBuilder control: () -> Control
+    ) {
         self.title = title
         self.detail = detail
+        self.planned = planned
         self.control = control()
     }
 
@@ -709,6 +717,9 @@ private struct SettingRow<Control: View>: View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(L10n.text(title))
+                if planned {
+                    PlannedBadge()
+                }
                 if let detail {
                     Text(L10n.text(detail))
                         .font(.caption)
@@ -717,6 +728,7 @@ private struct SettingRow<Control: View>: View {
             }
             Spacer(minLength: 20)
             control
+                .disabled(planned)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -742,6 +754,7 @@ private struct SettingsToggle: View {
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .disabled(planned)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

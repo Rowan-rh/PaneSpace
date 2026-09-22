@@ -1,6 +1,6 @@
 import Foundation
 
-enum BrowserViewMode: String, CaseIterable, Identifiable {
+enum BrowserViewMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case list
     case columns
 

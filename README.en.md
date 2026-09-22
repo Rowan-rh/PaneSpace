@@ -54,7 +54,7 @@ make app
 open dist/PaneSpace.app
 ```
 
-The generated app is ad-hoc signed for local development. macOS may ask for permission when a folder is accessed for the first time; PaneSpace uses system-provided security-scoped bookmarks to retain access to folders selected by the user.
+The generated app is ad-hoc signed for local development. The current version relies on file access already granted to the process; security-scoped bookmark persistence required for sandboxed distribution is not implemented yet.
 
 ## Roadmap
 

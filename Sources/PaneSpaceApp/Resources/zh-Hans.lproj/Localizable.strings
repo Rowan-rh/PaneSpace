@@ -2,6 +2,8 @@
 "About PaneSpace" = "关于 PaneSpace";
 "Accent color" = "强调色";
 "Action menu" = "操作菜单";
+"Actions" = "操作";
+"An item with that name already exists." = "已存在同名项目。";
 "Add Bookmark — Planned" = "添加书签 — 规划中";
 "Address Bar" = "地址栏";
 "Address bar position" = "地址栏位置";
@@ -32,6 +34,7 @@
 "Choose the commands shown for files and folders." = "选择文件和文件夹菜单中显示的命令。";
 "Choose the groups shown next to the workspace." = "选择侧边栏中显示的分组。";
 "Close Extra Panes" = "关闭其他面板";
+"Close Window" = "关闭窗口";
 "Close Settings" = "关闭设置";
 "Close extra panes" = "关闭其他面板";
 "Close tab" = "关闭标签";
@@ -65,6 +68,7 @@
 "Defaults shared by new folders and workspaces." = "新文件夹和工作区共用的默认设置。";
 "Designed for macOS 26 and later. Built with SwiftUI and AppKit under the MIT License." = "面向 macOS 26 及更高版本，使用 SwiftUI 和 AppKit 构建，采用 MIT 许可证。";
 "Desktop" = "桌面";
+"Dismiss error" = "关闭错误提示";
 "Development" = "开发";
 "Development, diagnostics, and reset controls." = "开发、诊断和重置选项。";
 "Diagnostic logging" = "诊断日志";
@@ -86,6 +90,7 @@
 "Filter while typing" = "输入时筛选";
 "Finder Extension" = "访达扩展";
 "Folder Browsing" = "文件夹浏览";
+"Folder" = "文件夹";
 "Folder Sync" = "文件夹同步";
 "Folder name" = "文件夹名称";
 "Folder unavailable" = "无法访问文件夹";
@@ -153,6 +158,7 @@
 "Other…" = "其他…";
 "PLANNED" = "规划中";
 "Pane Layout" = "面板布局";
+"PaneSpace does not have permission to complete this operation." = "PaneSpace 没有完成此操作的权限。";
 "Pane close button" = "面板关闭按钮";
 "Parent Folder" = "上级文件夹";
 "Permissions" = "权限";
@@ -224,6 +230,9 @@
 "Terminal" = "终端";
 "The default is 196 points." = "默认值为 196 点。";
 "The name cannot be empty or contain a slash." = "名称不能为空，也不能包含斜杠。";
+"The name is not valid." = "名称无效。";
+"The item is no longer available." = "该项目已不可用。";
+"The file operation could not be completed." = "无法完成文件操作。";
 "The selected items will be moved to the Trash." = "所选项目将被移到废纸篓。";
 "Theme" = "主题";
 "Theme intensity" = "主题强度";
@@ -251,4 +260,5 @@
 "Yellow" = "黄色";
 "%lld items" = "%lld 个项目";
 "%lld selected" = "已选择 %lld 项";
+"%lld items could not be moved to the Trash: %@" = "%lld 个项目无法移到废纸篓：%@";
 "%@ available" = "可用 %@";
