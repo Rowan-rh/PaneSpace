@@ -4,6 +4,25 @@ import XCTest
 
 final class BrowserPaneModelTests: XCTestCase {
     @MainActor
+    func testSearchFiltersCurrentPaneCaseInsensitivelyAndKeepsQueriesIndependent() async throws {
+        let fixture = ColumnNavigationFixture()
+        let firstPane = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        let secondPane = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !firstPane.isLoading && !secondPane.isLoading }
+
+        firstPane.searchText = "FILE"
+        secondPane.searchText = "fold"
+
+        XCTAssertEqual(firstPane.visibleItems.map(\.name), ["file.txt"])
+        XCTAssertEqual(secondPane.visibleItems.map(\.name), ["folder"])
+
+        firstPane.searchText = ""
+
+        XCTAssertEqual(Set(firstPane.visibleItems.map(\.name)), Set(["folder", "file.txt"]))
+        XCTAssertEqual(secondPane.visibleItems.map(\.name), ["folder"])
+    }
+
+    @MainActor
     func testColumnSelectionLoadsTheNextDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

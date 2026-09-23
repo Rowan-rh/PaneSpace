@@ -133,6 +133,40 @@ final class AppSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testAddingPaneAfterClosingOneUsesActiveLocationInsteadOfHiddenPaneLocation() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        let activeLocation = FileManager.default.homeDirectoryForCurrentUser
+        model.primaryPane.navigate(to: activeLocation, recordsHistory: false)
+        model.tertiaryPane.navigate(
+            to: URL(fileURLWithPath: "/Applications", isDirectory: true),
+            recordsHistory: false
+        )
+
+        model.closePane(at: .secondary)
+        model.addPane()
+
+        XCTAssertEqual(model.paneLayout, .twoColumns)
+        XCTAssertEqual(model.secondaryPane.currentURL, activeLocation.standardizedFileURL)
+        XCTAssertEqual(model.activePane, .secondary)
+    }
+
+    @MainActor
+    func testAddingFirstPaneUsesThePreferredRowOrientation() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(PaneLayout.twoRows.rawValue, forKey: "defaultPaneLayout")
+        let model = AppModel(defaults: defaults)
+        model.paneLayout = .single
+
+        model.addPane()
+
+        XCTAssertEqual(model.paneLayout, .twoRows)
+        XCTAssertEqual(model.activePane, .secondary)
+    }
+
+    @MainActor
     func testClosingTheOnlyPaneKeepsTheWorkspace() throws {
         let (defaults, suiteName) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }

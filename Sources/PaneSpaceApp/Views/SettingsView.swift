@@ -494,7 +494,9 @@ private struct HotkeySettingsPage: View {
             }
 
             SettingsGroup(title: "Tabs and Panes") {
+                HotkeyRow(title: "Search in Pane", shortcut: "⌘F")
                 HotkeyRow(title: "New Tab", shortcut: "⌘T")
+                HotkeyRow(title: "New Pane", shortcut: "⌘N")
                 HotkeyRow(title: "Toggle Second Pane", shortcut: "⌥⌘D")
                 HotkeyRow(title: "Quick Look", shortcut: "Space")
                 HotkeyRow(title: "New Folder", shortcut: "⇧⌘N")
