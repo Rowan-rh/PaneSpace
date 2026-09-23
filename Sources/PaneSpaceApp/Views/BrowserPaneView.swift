@@ -226,8 +226,7 @@ private struct TabStripView: View {
     private var paneControl: some View {
         if appModel.paneLayout.visiblePaneCount > 1 {
             Button {
-                appModel.paneLayout = .single
-                appModel.activePane = .primary
+                appModel.closePane(at: slot)
             } label: {
                 Image(systemName: "minus")
                     .font(.caption2.weight(.semibold))
@@ -235,8 +234,8 @@ private struct TabStripView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 4)
-            .help("Close extra panes")
-            .accessibilityLabel("Close extra panes")
+            .help("Close pane")
+            .accessibilityLabel("Close pane")
         }
     }
 }

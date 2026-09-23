@@ -32,13 +32,26 @@ struct PaneSpaceApp: App {
                 }
                 .disabled(appModel.activePaneModel.isPerformingOperation)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
 
-                Divider()
-
-                Button("Close Window") {
-                    NSApp.keyWindow?.performClose(nil)
+            CommandGroup(replacing: .saveItem) {
+                Button {
+                    if appModel.canCloseActiveTabOrPane {
+                        appModel.closeActiveTabOrPane()
+                    } else {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                } label: {
+                    Text(L10n.text(appModel.canCloseActiveTabOrPane ? "Close Tab or Pane" : "Close Window"))
                 }
                 .keyboardShortcut("w", modifiers: .command)
+
+                if appModel.canCloseActiveTabOrPane {
+                    Button("Close Window") {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                    .keyboardShortcut("w", modifiers: [.command, .shift])
+                }
 
                 Divider()
 

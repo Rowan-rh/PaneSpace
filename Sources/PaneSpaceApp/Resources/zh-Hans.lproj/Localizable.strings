@@ -34,7 +34,9 @@
 "Choose the commands shown for files and folders." = "选择文件和文件夹菜单中显示的命令。";
 "Choose the groups shown next to the workspace." = "选择侧边栏中显示的分组。";
 "Close Extra Panes" = "关闭其他面板";
+"Close Tab or Pane" = "关闭标签或面板";
 "Close Window" = "关闭窗口";
+"Close pane" = "关闭面板";
 "Close Settings" = "关闭设置";
 "Close extra panes" = "关闭其他面板";
 "Close tab" = "关闭标签";

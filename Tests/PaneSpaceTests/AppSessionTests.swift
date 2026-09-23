@@ -72,6 +72,82 @@ final class AppSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testCloseCommandClosesTheActiveTabBeforeItsPane() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        model.primaryPane.addTab(url: URL(fileURLWithPath: "/tmp", isDirectory: true))
+
+        model.closeActiveTabOrPane()
+
+        XCTAssertEqual(model.primaryPane.tabs.count, 1)
+        XCTAssertEqual(model.paneLayout, .twoColumns)
+    }
+
+    @MainActor
+    func testCloseCommandRemovesTheActivePrimaryPane() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        let remainingPaneID = model.secondaryPane.id
+        model.activePane = .primary
+
+        model.closeActiveTabOrPane()
+
+        XCTAssertEqual(model.paneLayout, .single)
+        XCTAssertEqual(model.primaryPane.id, remainingPaneID)
+        XCTAssertEqual(model.activePane, .primary)
+    }
+
+    @MainActor
+    func testCloseCommandRemovesTheActiveSecondaryPane() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        let remainingPaneID = model.primaryPane.id
+        model.activePane = .secondary
+
+        model.closeActiveTabOrPane()
+
+        XCTAssertEqual(model.paneLayout, .single)
+        XCTAssertEqual(model.primaryPane.id, remainingPaneID)
+        XCTAssertEqual(model.activePane, .primary)
+    }
+
+    @MainActor
+    func testPaneCloseButtonRemovesOnlyItsPane() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        model.paneLayout = .threeColumns
+        model.activePane = .primary
+        let firstPaneID = model.primaryPane.id
+        let thirdPaneID = model.tertiaryPane.id
+
+        model.closePane(at: .secondary)
+
+        XCTAssertEqual(model.paneLayout, .twoColumns)
+        XCTAssertEqual(model.primaryPane.id, firstPaneID)
+        XCTAssertEqual(model.secondaryPane.id, thirdPaneID)
+        XCTAssertEqual(model.activePane, .secondary)
+    }
+
+    @MainActor
+    func testClosingTheOnlyPaneKeepsTheWorkspace() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        model.paneLayout = .single
+        let paneID = model.primaryPane.id
+
+        model.closePane(at: .primary)
+
+        XCTAssertEqual(model.paneLayout, .single)
+        XCTAssertEqual(model.primaryPane.id, paneID)
+        XCTAssertFalse(model.canCloseActiveTabOrPane)
+    }
+
+    @MainActor
     func testRestoreDisabledUsesDefaultLayout() throws {
         let (defaults, suiteName) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }

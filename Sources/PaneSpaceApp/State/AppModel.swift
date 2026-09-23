@@ -16,10 +16,10 @@ final class AppModel: ObservableObject {
     @Published var isCreatingFolder = false
     @Published var isShowingSettings = false
 
-    let primaryPane: BrowserPaneModel
-    let secondaryPane: BrowserPaneModel
-    let tertiaryPane: BrowserPaneModel
-    let quaternaryPane: BrowserPaneModel
+    @Published private(set) var primaryPane: BrowserPaneModel
+    @Published private(set) var secondaryPane: BrowserPaneModel
+    @Published private(set) var tertiaryPane: BrowserPaneModel
+    @Published private(set) var quaternaryPane: BrowserPaneModel
 
     private let defaults: UserDefaults
     private var paneObservationCancellables: Set<AnyCancellable> = []
@@ -92,6 +92,10 @@ final class AppModel: ObservableObject {
         pane(for: activePane)
     }
 
+    var canCloseActiveTabOrPane: Bool {
+        activePaneModel.tabs.count > 1 || paneLayout.visiblePaneCount > 1
+    }
+
     func pane(for slot: PaneSlot) -> BrowserPaneModel {
         switch slot {
         case .primary: primaryPane
@@ -111,6 +115,33 @@ final class AppModel: ObservableObject {
 
     func toggleSecondPane() {
         paneLayout = paneLayout == .single ? .twoColumns : .single
+    }
+
+    func closeActiveTabOrPane() {
+        let pane = activePaneModel
+        if pane.tabs.count > 1 {
+            pane.closeTab(pane.activeTabID)
+            return
+        }
+
+        closePane(at: activePane)
+    }
+
+    func closePane(at slot: PaneSlot) {
+        let visibleSlots = paneLayout.visibleSlots
+        guard visibleSlots.count > 1,
+              let closingIndex = visibleSlots.firstIndex(of: slot) else { return }
+
+        var panes = [primaryPane, secondaryPane, tertiaryPane, quaternaryPane]
+        let closedPane = panes.remove(at: closingIndex)
+        panes.append(closedPane)
+        primaryPane = panes[0]
+        secondaryPane = panes[1]
+        tertiaryPane = panes[2]
+        quaternaryPane = panes[3]
+
+        paneLayout = reducedLayout(afterClosingPaneFrom: paneLayout)
+        activePane = PaneSlot.allCases[min(closingIndex, paneLayout.visiblePaneCount - 1)]
     }
 
     func saveSession() {
@@ -135,5 +166,24 @@ final class AppModel: ObservableObject {
             return nil
         }
         return session
+    }
+
+    private func reducedLayout(afterClosingPaneFrom layout: PaneLayout) -> PaneLayout {
+        switch layout {
+        case .fourRows:
+            .threeRows
+        case .fourColumns:
+            .threeColumns
+        case .fourGrid:
+            .primaryLeft
+        case .threeRows, .primaryTop, .primaryBottom:
+            .twoRows
+        case .threeColumns, .primaryLeft, .primaryRight:
+            .twoColumns
+        case .twoColumns, .twoRows:
+            .single
+        case .single:
+            .single
+        }
     }
 }
