@@ -170,6 +170,52 @@ final class BrowserPaneModelTests: XCTestCase {
     }
 
     @MainActor
+    func testObservedDirectoryRefreshesAndKeepsSurvivingSelection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = BrowserPaneModel(url: root, provider: LocalFileProvider())
+        model.setDirectoryObservationEnabled(true)
+        defer { model.setDirectoryObservationEnabled(false) }
+        try await waitUntil { !model.isLoading }
+
+        let first = root.appendingPathComponent("first.txt")
+        try Data("one".utf8).write(to: first)
+        try await waitUntil { model.items.map(\.name) == ["first.txt"] }
+        guard let firstID = model.items.first?.id else {
+            return XCTFail("Observed file did not appear")
+        }
+        model.selection = [firstID]
+
+        try Data("two".utf8).write(to: root.appendingPathComponent("second.txt"))
+        try await waitUntil { model.items.count == 2 }
+        XCTAssertEqual(model.selection, [firstID])
+    }
+
+    @MainActor
+    func testOldDirectoryObservationCannotReplaceNewLocation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("First", isDirectory: true)
+        let second = root.appendingPathComponent("Second", isDirectory: true)
+        for directory in [first, second] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let model = BrowserPaneModel(url: first, provider: LocalFileProvider())
+        model.setDirectoryObservationEnabled(true)
+        defer { model.setDirectoryObservationEnabled(false) }
+        try await waitUntil { !model.isLoading }
+
+        model.navigate(to: second)
+        try await waitUntil { !model.isLoading && model.currentURL == second }
+        try Data("old".utf8).write(to: first.appendingPathComponent("old.txt"))
+        try await Task.sleep(for: .milliseconds(350))
+
+        XCTAssertEqual(model.currentURL, second)
+        XCTAssertTrue(model.items.isEmpty)
+    }
+
+    @MainActor
     private func waitUntil(
         timeoutIterations: Int = 200,
         condition: () -> Bool

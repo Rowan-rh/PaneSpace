@@ -9,12 +9,15 @@ final class AppModel: ObservableObject {
             if !paneLayout.visibleSlots.contains(activePane) {
                 activePane = .primary
             }
+            syncDirectoryObservation()
         }
     }
     @Published var activePane: PaneSlot
     @Published var sidebarSelection: SidebarLocation.ID?
     @Published var isCreatingFolder = false
     @Published var isShowingSettings = false
+    @Published private(set) var locationEditRequest = 0
+    @Published private(set) var transferQueue = FileTransferQueueModel()
 
     @Published private(set) var primaryPane: BrowserPaneModel
     @Published private(set) var secondaryPane: BrowserPaneModel
@@ -23,6 +26,7 @@ final class AppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private var paneObservationCancellables: Set<AnyCancellable> = []
+    private var visibleWindowCount = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -86,6 +90,13 @@ final class AppModel: ObservableObject {
                 }
                 .store(in: &paneObservationCancellables)
         }
+        transferQueue.didCompleteItem = { [weak self] sourceDirectory, destinationDirectory in
+            self?.refreshOpenPanes(in: [sourceDirectory, destinationDirectory])
+        }
+        transferQueue.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &paneObservationCancellables)
+        syncDirectoryObservation()
     }
 
     var activePaneModel: BrowserPaneModel {
@@ -94,6 +105,26 @@ final class AppModel: ObservableObject {
 
     var canCloseActiveTabOrPane: Bool {
         activePaneModel.tabs.count > 1 || paneLayout.visiblePaneCount > 1
+    }
+
+    var canTransferSelection: Bool {
+        paneLayout.visiblePaneCount > 1 && !activePaneModel.selectedItems.isEmpty
+    }
+
+    func nextVisiblePane(after slot: PaneSlot) -> PaneSlot? {
+        let slots = paneLayout.visibleSlots
+        guard slots.count > 1, let index = slots.firstIndex(of: slot) else { return nil }
+        return slots[(index + 1) % slots.count]
+    }
+
+    func cycleActivePane(backward: Bool) {
+        let slots = paneLayout.visibleSlots
+        guard slots.count > 1, let index = slots.firstIndex(of: activePane) else { return }
+        activePane = slots[(index + (backward ? slots.count - 1 : 1)) % slots.count]
+    }
+
+    func requestLocationEditing() {
+        locationEditRequest += 1
     }
 
     func pane(for slot: PaneSlot) -> BrowserPaneModel {
@@ -115,6 +146,55 @@ final class AppModel: ObservableObject {
 
     func toggleSecondPane() {
         paneLayout = paneLayout == .single ? .twoColumns : .single
+    }
+
+    func transfer(
+        _ urls: [URL],
+        from sourceSlot: PaneSlot?,
+        to destinationSlot: PaneSlot,
+        kind: FileTransferKind
+    ) {
+        guard paneLayout.visibleSlots.contains(destinationSlot),
+              sourceSlot != destinationSlot,
+              !urls.isEmpty else { return }
+        transferQueue.enqueue(
+            kind: kind,
+            sources: urls,
+            destinationDirectory: pane(for: destinationSlot).currentURL
+        )
+    }
+
+    func transferSelection(from sourceSlot: PaneSlot, to destinationSlot: PaneSlot, kind: FileTransferKind) {
+        let urls = pane(for: sourceSlot).selectedItems.map(\.url)
+        transfer(urls, from: sourceSlot, to: destinationSlot, kind: kind)
+    }
+
+    private func refreshOpenPanes(in directories: [URL]) {
+        let changed = Set(directories.map { $0.standardizedFileURL })
+        for slot in paneLayout.visibleSlots {
+            let pane = pane(for: slot)
+            if changed.contains(pane.currentURL.standardizedFileURL) {
+                pane.refresh()
+            }
+        }
+    }
+
+    private func syncDirectoryObservation() {
+        for slot in PaneSlot.allCases {
+            pane(for: slot).setDirectoryObservationEnabled(
+                visibleWindowCount > 0 && paneLayout.visibleSlots.contains(slot)
+            )
+        }
+    }
+
+    func windowDidAppear() {
+        visibleWindowCount += 1
+        syncDirectoryObservation()
+    }
+
+    func windowDidDisappear() {
+        visibleWindowCount = max(0, visibleWindowCount - 1)
+        syncDirectoryObservation()
     }
 
     func closeActiveTabOrPane() {

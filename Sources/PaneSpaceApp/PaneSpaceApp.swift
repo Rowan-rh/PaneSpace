@@ -64,6 +64,8 @@ struct PaneSpaceApp: App {
             }
 
             CommandMenu("Navigate") {
+                Button("Go to Folder") { appModel.requestLocationEditing() }
+                    .keyboardShortcut("l", modifiers: .command)
                 Button("Back") { appModel.activePaneModel.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
                 Button("Forward") { appModel.activePaneModel.goForward() }
@@ -74,6 +76,24 @@ struct PaneSpaceApp: App {
                     .keyboardShortcut("r", modifiers: .command)
                 Button("Quick Look") { appModel.activePaneModel.previewSelection() }
                     .keyboardShortcut(.space, modifiers: [])
+            }
+
+            CommandMenu("Transfer") {
+                Button("Copy to Next Pane") {
+                    if let destination = appModel.nextVisiblePane(after: appModel.activePane) {
+                        appModel.transferSelection(from: appModel.activePane, to: destination, kind: .copy)
+                    }
+                }
+                .disabled(!appModel.canTransferSelection)
+                .keyboardShortcut("c", modifiers: [.command, .control])
+
+                Button("Move to Next Pane") {
+                    if let destination = appModel.nextVisiblePane(after: appModel.activePane) {
+                        appModel.transferSelection(from: appModel.activePane, to: destination, kind: .move)
+                    }
+                }
+                .disabled(!appModel.canTransferSelection)
+                .keyboardShortcut("m", modifiers: [.command, .control])
             }
 
             CommandGroup(replacing: .appSettings) {

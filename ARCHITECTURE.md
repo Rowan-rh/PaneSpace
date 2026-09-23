@@ -19,6 +19,9 @@ FileProviding protocol
     ├── SFTPProvider       planned
     ├── SMBProvider        planned
     └── WebDAVProvider     planned
+
+AppModel ─── FileTransferQueueModel ─── LocalTransferService
+BrowserPaneModel ─── LocalDirectoryObserver / LocalPathResolver
 ```
 
 ## Modules
@@ -57,7 +60,9 @@ Each provider should eventually report:
 
 ## File-operation engine
 
-Current local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. Copying and moving should be implemented as queued jobs rather than direct view actions. Jobs should support progress, cancellation, retry, conflict decisions, and an operation journal. Local jobs can use `FileManager`; remote jobs delegate to providers.
+Local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. `FileTransferQueueModel` runs local copy and move jobs serially, publishes item progress, cancellation, retry, and conflict decisions, and retains a session-only task list. `LocalTransferService` stages a complete copy in the destination directory before publishing it. Replace moves the old destination to Trash, and Move trashes the source only after the destination is complete. A failed source removal can be retried without copying again. Byte progress, persistent history, and remote transfers remain future work. The safety tradeoffs are recorded in [ADR 0006](docs/adr/0006-staged-local-transfers.md).
+
+Visible local panes observe their current directory and coalesce file-system events before reloading. Completion of a transfer explicitly refreshes affected panes. `LocalPathResolver` validates typed paths outside the main actor; `BrowserPaneModel` changes history only after validation succeeds.
 
 ## Security model
 
@@ -69,4 +74,4 @@ PaneSpace is implemented from public platform behavior and Apple documentation. 
 
 ## Planned evolution
 
-The next architectural step is the operation engine described in [ADR 0003](docs/adr/0003-operation-queue.md). The asynchronous primitive boundary is recorded in [ADR 0004](docs/adr/0004-async-provider-primitives.md), and session persistence in [ADR 0005](docs/adr/0005-versioned-session-state.md). Capability reporting and remote-specific cancellation remain to be added before remote backends.
+The operation queue is described in [ADR 0003](docs/adr/0003-operation-queue.md), the asynchronous primitive boundary in [ADR 0004](docs/adr/0004-async-provider-primitives.md), and session persistence in [ADR 0005](docs/adr/0005-versioned-session-state.md). Capability reporting and remote-specific cancellation remain to be added before remote backends.

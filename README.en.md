@@ -25,6 +25,10 @@ PaneSpace is a clean-room, open-source macOS file manager focused on tabs and si
 - Quick Look with the Space key
 - Open files with their default application
 - Reveal files in Finder
+- Copy, move, or drag local files between panes, with skip, keep-both, and replace choices for conflicts
+- View transfer jobs, cancel or retry them, and see open folders refresh automatically
+- Enter a folder path with Command-L and cycle panes with Tab or Shift-Tab
+- Close the active tab or pane with Command-W; close the window when only one pane remains
 - Local file-provider abstraction for future remote backends
 - Native settings center with live appearance, density, sidebar, address-bar, and pane controls
 - English and Simplified Chinese interface localization; the app follows the macOS language setting by default
@@ -58,7 +62,7 @@ The generated app is ad-hoc signed for local development. The current version re
 
 ## Roadmap
 
-1. Drag and drop, copy and move queues, conflict handling
+1. Byte progress and persistent transfer history
 2. Grid and gallery views
 3. Saved workspaces and session restoration
 4. SFTP, SMB, and WebDAV providers

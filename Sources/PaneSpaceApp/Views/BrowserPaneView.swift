@@ -11,13 +11,15 @@ struct BrowserPaneView: View {
 
     @State private var renameText = ""
     @State private var confirmsTrash = false
+    @State private var droppedURLs: [URL] = []
+    @State private var showsDropChoices = false
 
     var body: some View {
         VStack(spacing: 0) {
             TabStripView(model: model, slot: slot)
 
             if addressBarPosition == "top" {
-                PathBarView(model: model)
+                PathBarView(model: model, slot: slot)
                 Divider()
             }
 
@@ -47,7 +49,7 @@ struct BrowserPaneView: View {
 
             if addressBarPosition == "bottom" {
                 Divider()
-                PathBarView(model: model)
+                PathBarView(model: model, slot: slot)
             }
 
             if showStatusBar {
@@ -67,6 +69,22 @@ struct BrowserPaneView: View {
         .simultaneousGesture(TapGesture().onEnded {
             appModel.activePane = slot
         })
+        .dropDestination(for: URL.self) { urls, _ in
+            let localURLs = urls.filter(\.isFileURL)
+            guard !localURLs.isEmpty else { return false }
+            droppedURLs = localURLs
+            showsDropChoices = true
+            return true
+        }
+        .confirmationDialog("Transfer dropped items?", isPresented: $showsDropChoices) {
+            Button("Copy Here") {
+                appModel.transfer(droppedURLs, from: nil, to: slot, kind: .copy)
+            }
+            Button("Move Here") {
+                appModel.transfer(droppedURLs, from: nil, to: slot, kind: .move)
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .onDeleteCommand {
             if !model.selection.isEmpty {
                 confirmsTrash = true
@@ -129,9 +147,9 @@ struct BrowserPaneView: View {
         } else {
             switch model.viewMode {
             case .list:
-                FileListView(model: model, compact: appModel.paneLayout.prefersCompactRows)
+                FileListView(model: model, slot: slot, compact: appModel.paneLayout.prefersCompactRows)
             case .columns:
-                ColumnBrowserView(model: model)
+                ColumnBrowserView(model: model, slot: slot)
             }
         }
     }
@@ -243,6 +261,11 @@ private struct TabStripView: View {
 private struct PathBarView: View {
     @EnvironmentObject private var appModel: AppModel
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+
+    @State private var isEditingLocation = false
+    @State private var locationText = ""
+    @FocusState private var isLocationFocused: Bool
 
     @AppStorage("showPaneNavigation") private var showPaneNavigation = true
     @AppStorage("showAddressReload") private var showAddressReload = true
@@ -251,10 +274,12 @@ private struct PathBarView: View {
     var body: some View {
         GeometryReader { geometry in
             Group {
-                if geometry.size.width >= 540 {
+                if isEditingLocation {
+                    locationControl
+                } else if geometry.size.width >= 540 {
                     HStack(spacing: 6) {
                         navigationControls
-                        BreadcrumbView(model: model)
+                        locationControl
                             .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                         searchField
@@ -264,7 +289,7 @@ private struct PathBarView: View {
                 } else if geometry.size.width >= 400 {
                     HStack(spacing: 6) {
                         navigationControls
-                        BreadcrumbView(model: model)
+                        locationControl
                             .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                         searchField
@@ -273,7 +298,7 @@ private struct PathBarView: View {
                     }
                 } else {
                     HStack(spacing: 6) {
-                        BreadcrumbView(model: model)
+                        locationControl
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                         searchField
@@ -285,6 +310,68 @@ private struct PathBarView: View {
             .padding(.horizontal, 8)
         }
         .frame(height: 36)
+        .onChange(of: appModel.locationEditRequest) {
+            guard appModel.activePane == slot else { return }
+            locationText = model.currentURL.path
+            model.clearLocationError()
+            isEditingLocation = true
+            isLocationFocused = true
+        }
+        .onChange(of: model.locationErrorMessage) {
+            if isEditingLocation, model.locationErrorMessage != nil {
+                isLocationFocused = true
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if isEditingLocation, let error = model.locationErrorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 10)
+                    .offset(y: 16)
+                    .accessibilityLabel(error)
+            }
+        }
+        .padding(.bottom, isEditingLocation && model.locationErrorMessage != nil ? 16 : 0)
+    }
+
+    @ViewBuilder
+    private var locationControl: some View {
+        if isEditingLocation {
+            HStack(spacing: 4) {
+                TextField("Folder path", text: $locationText)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isLocationFocused)
+                    .onSubmit {
+                        Task {
+                            if await model.navigateToEnteredLocation(locationText) {
+                                isEditingLocation = false
+                                isLocationFocused = false
+                            }
+                        }
+                    }
+                    .onExitCommand { dismissLocationEditor() }
+                Button {
+                    dismissLocationEditor()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel location editing")
+            }
+            .frame(minWidth: 40, maxWidth: .infinity)
+            .layoutPriority(1)
+        } else {
+            BreadcrumbView(model: model)
+                .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+        }
+    }
+
+    private func dismissLocationEditor() {
+        isEditingLocation = false
+        isLocationFocused = false
+        model.clearLocationError()
     }
 
     @ViewBuilder
@@ -454,13 +541,14 @@ private struct PathBarView: View {
 
 private struct ColumnBrowserView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(model.columns) { column in
-                        ColumnView(model: model, column: column)
+                        ColumnView(model: model, slot: slot, column: column)
                             .frame(width: 250)
                             .id(column.id)
                         Divider()
@@ -480,6 +568,7 @@ private struct ColumnBrowserView: View {
 
 private struct ColumnView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
     let column: BrowserColumn
 
     var body: some View {
@@ -528,6 +617,7 @@ private struct ColumnView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .draggable(item.url)
                             .accessibilityLabel(item.name)
                             .accessibilityValue(item.isDirectory ? "Folder" : item.kind)
                             .simultaneousGesture(
@@ -548,6 +638,7 @@ private struct ColumnView: View {
                                     model.revealSelectionInFinder()
                                 }
                                 Divider()
+                                TransferActionsMenu(model: model, slot: slot, item: item)
                                 Button("Rename…") { model.renameTarget = item }
                                     .disabled(model.isPerformingOperation)
                                 Button("Move to Trash", role: .destructive) {
@@ -648,6 +739,7 @@ private struct BreadcrumbView: View {
 
 private struct FileListView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
     let compact: Bool
 
     @AppStorage("rowDensity") private var rowDensity = "comfortable"
@@ -667,6 +759,7 @@ private struct FileListView: View {
                     .onTapGesture(count: 2) {
                         model.open(item)
                     }
+                    .draggable(item.url)
                     .contextMenu {
                         Button("Open") { model.open(item) }
                         Button("Quick Look") {
@@ -678,8 +771,7 @@ private struct FileListView: View {
                             model.revealSelectionInFinder()
                         }
                         Divider()
-                        Button("Copy to Other Pane — Planned") {}
-                            .disabled(true)
+                        TransferActionsMenu(model: model, slot: slot, item: item)
                         Button("Rename…") {
                             model.renameTarget = item
                         }
@@ -693,6 +785,48 @@ private struct FileListView: View {
             }
         }
         .listStyle(.inset)
+    }
+}
+
+private struct TransferActionsMenu: View {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+    let item: FileItem
+
+    var body: some View {
+        if !targets.isEmpty {
+            Menu("Copy to Pane") {
+                ForEach(targets) { target in
+                    Button(title(for: target)) {
+                        appModel.transfer(urls, from: slot, to: target, kind: .copy)
+                    }
+                }
+            }
+            Menu("Move to Pane") {
+                ForEach(targets) { target in
+                    Button(title(for: target)) {
+                        appModel.transfer(urls, from: slot, to: target, kind: .move)
+                    }
+                }
+            }
+        }
+    }
+
+    private var targets: [PaneSlot] {
+        appModel.paneLayout.visibleSlots.filter { $0 != slot }
+    }
+
+    private var urls: [URL] {
+        if model.selection.contains(item.id) {
+            return model.selectedItems.map(\.url)
+        }
+        return [item.url]
+    }
+
+    private func title(for target: PaneSlot) -> String {
+        let index = PaneSlot.allCases.firstIndex(of: target) ?? 0
+        return L10n.format("Pane %lld", Int64(index + 1))
     }
 }
 

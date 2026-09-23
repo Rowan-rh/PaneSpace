@@ -20,5 +20,5 @@ Pane state keeps directory-loading errors separate from file-operation errors. L
 - Slow local or mounted-volume calls no longer block the main actor.
 - Remote providers can implement the same contract without wrapping synchronous APIs.
 - Views can disable conflicting mutations while one local mutation is in progress.
-- The provider actor serializes current local primitives, but it does not replace the queued operation engine from ADR 0003.
-- Copy, move, progress, cancellation, retry, and conflict policy remain future operation-engine work.
+- The provider actor serializes create-folder, rename, and Trash primitives. The separate local transfer queue from ADR 0003 now handles copy and move.
+- Remote-provider capability reporting and provider-neutral transfer execution remain future work.

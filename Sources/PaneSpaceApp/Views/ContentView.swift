@@ -29,6 +29,12 @@ struct ContentView: View {
         }
         .tint(accent)
         .background(WindowFrameAutosaver())
+        .background(PaneKeyboardMonitor { backward in
+            appModel.cycleActivePane(backward: backward)
+        })
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            TransferCenterView(queue: appModel.transferQueue)
+        }
         .toolbar {
             if showToolbarNavigation {
                 ToolbarItemGroup(placement: .navigation) {
@@ -126,12 +132,16 @@ struct ContentView: View {
             SettingsView()
                 .frame(width: 860, height: 620)
         }
+        .onAppear {
+            appModel.windowDidAppear()
+        }
         .onChange(of: scenePhase) {
             if scenePhase == .inactive || scenePhase == .background {
                 appModel.saveSession()
             }
         }
         .onDisappear {
+            appModel.windowDidDisappear()
             appModel.saveSession()
         }
     }

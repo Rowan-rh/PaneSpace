@@ -21,11 +21,16 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var isPerformingOperation = false
     @Published var availableCapacity: Int64?
     @Published var renameTarget: FileItem?
+    @Published private(set) var locationErrorMessage: String?
+    @Published private(set) var isResolvingLocation = false
 
     private let provider: FileProviding
     private var refreshTask: Task<Void, Never>?
     private var columnLoadTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
+    private let directoryObserver = LocalDirectoryObserver()
+    private let pathResolver = LocalPathResolver()
+    private var observesCurrentDirectory = false
 
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -226,6 +231,31 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         refresh()
     }
 
+    func navigateToEnteredLocation(_ input: String) async -> Bool {
+        guard !isResolvingLocation else { return false }
+        isResolvingLocation = true
+        locationErrorMessage = nil
+        let baseDirectory = currentURL
+        do {
+            let destination = try await pathResolver.resolve(input, relativeTo: baseDirectory)
+            guard currentURL == baseDirectory else {
+                isResolvingLocation = false
+                return false
+            }
+            navigate(to: destination)
+            isResolvingLocation = false
+            return true
+        } catch {
+            locationErrorMessage = error.localizedDescription
+            isResolvingLocation = false
+            return false
+        }
+    }
+
+    func clearLocationError() {
+        locationErrorMessage = nil
+    }
+
     func goBack() {
         var tab = activeTab
         guard let destination = tab.backHistory.popLast() else { return }
@@ -260,6 +290,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func refresh() {
         let directory = currentURL
+        if observesCurrentDirectory {
+            directoryObserver.observe(directory) { [weak self] in self?.refresh() }
+        }
         let showsHiddenFiles = showsHiddenFiles
         let provider = provider
 
@@ -309,6 +342,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 errorMessage = error.localizedDescription
                 availableCapacity = nil
             }
+        }
+    }
+
+    func setDirectoryObservationEnabled(_ enabled: Bool) {
+        observesCurrentDirectory = enabled
+        if enabled {
+            directoryObserver.observe(currentURL) { [weak self] in self?.refresh() }
+        } else {
+            directoryObserver.stop()
         }
     }
 
