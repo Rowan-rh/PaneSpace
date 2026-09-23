@@ -23,6 +23,75 @@ final class BrowserPaneModelTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardFolderEntryAndParentNavigationRestoreFolderSelection() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+
+        model.selection = [fixture.folder.id]
+        XCTAssertTrue(model.enterSelectedFolderFromKeyboard())
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.folder.url }
+        XCTAssertEqual(model.items.map(\.id), [fixture.subfolder.id])
+        XCTAssertTrue(model.selection.isEmpty)
+
+        XCTAssertTrue(model.goUp())
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.root }
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+    }
+
+    @MainActor
+    func testKeyboardFolderEntryDoesNothingForFilesOrMultipleSelection() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+
+        model.selection = [fixture.file.id]
+        XCTAssertFalse(model.enterSelectedFolderFromKeyboard())
+        XCTAssertEqual(model.currentURL, fixture.root)
+
+        model.selection = [fixture.file.id, fixture.folder.id]
+        XCTAssertFalse(model.enterSelectedFolderFromKeyboard())
+        XCTAssertEqual(model.currentURL, fixture.root)
+
+        model.selection = []
+        XCTAssertFalse(model.enterSelectedFolderFromKeyboard())
+        XCTAssertEqual(model.currentURL, fixture.root)
+    }
+
+    @MainActor
+    func testKeyboardParentNavigationDoesNothingAtFileSystemRoot() async throws {
+        let fixture = ColumnNavigationFixture()
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        let model = BrowserPaneModel(url: root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+
+        XCTAssertFalse(model.goUp())
+        XCTAssertEqual(model.currentURL.standardizedFileURL, root.standardizedFileURL)
+    }
+
+    @MainActor
+    func testKeyboardParentNavigationLeavesSelectionEmptyWhenDepartedFolderWasRemoved() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let child = root.appendingPathComponent("Child", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+
+        let model = BrowserPaneModel(url: root, provider: LocalFileProvider())
+        try await waitUntil { !model.isLoading && model.items.count == 1 }
+        model.selection = [try XCTUnwrap(model.items.first?.id)]
+        XCTAssertTrue(model.enterSelectedFolderFromKeyboard())
+        try await waitUntil { !model.isLoading && model.currentURL == child }
+
+        try FileManager.default.removeItem(at: child)
+        XCTAssertTrue(model.goUp())
+        try await waitUntil { !model.isLoading && model.currentURL == root }
+
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.selection.isEmpty)
+    }
+
+    @MainActor
     func testColumnSelectionLoadsTheNextDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
