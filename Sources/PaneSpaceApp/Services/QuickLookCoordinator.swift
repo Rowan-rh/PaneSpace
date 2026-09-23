@@ -21,6 +21,7 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        previewURLs[index] as NSURL
+        guard previewURLs.indices.contains(index) else { return nil }
+        return previewURLs[index] as NSURL
     }
 }

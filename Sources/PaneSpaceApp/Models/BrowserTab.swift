@@ -1,6 +1,6 @@
 import Foundation
 
-struct BrowserTab: Identifiable, Hashable {
+struct BrowserTab: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var url: URL
     var backHistory: [URL]

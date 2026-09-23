@@ -1,0 +1,5 @@
+"NSDesktopFolderUsageDescription" = "PaneSpace 需要访问桌面，以浏览和管理其中的项目。";
+"NSDocumentsFolderUsageDescription" = "PaneSpace 需要访问文稿文件夹，以浏览和管理其中的项目。";
+"NSDownloadsFolderUsageDescription" = "PaneSpace 需要访问下载文件夹，以浏览和管理其中的项目。";
+"NSNetworkVolumesUsageDescription" = "PaneSpace 需要访问已连接的网络卷，以浏览和管理其中的项目。";
+"NSRemovableVolumesUsageDescription" = "PaneSpace 需要访问已连接的可移动卷，以浏览和管理其中的项目。";

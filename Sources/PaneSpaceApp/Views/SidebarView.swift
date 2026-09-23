@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var model = SidebarModel()
 
     @AppStorage("showWorkspaceGroup") private var showWorkspaceGroup = true
     @AppStorage("showVolumesGroup") private var showVolumesGroup = true
@@ -11,14 +13,14 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             List(selection: $appModel.sidebarSelection) {
                 Section("Favorites") {
-                    ForEach(SidebarLocation.favorites) { location in
+                    ForEach(model.favorites) { location in
                         locationRow(location)
                     }
                 }
 
                 if showWorkspaceGroup {
                     Section("Workspaces") {
-                        ForEach(workspaces) { location in
+                        ForEach(model.workspaces) { location in
                             locationRow(location)
                         }
                     }
@@ -26,7 +28,7 @@ struct SidebarView: View {
 
                 if showVolumesGroup {
                     Section("Locations") {
-                        ForEach(SidebarLocation.volumes) { location in
+                        ForEach(model.volumes) { location in
                             locationRow(location)
                         }
 
@@ -81,26 +83,27 @@ struct SidebarView: View {
             .frame(height: 34)
         }
         .navigationTitle("PaneSpace")
-    }
-
-    private var workspaces: [SidebarLocation] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [
-            SidebarLocation(id: "workspace:home", title: "Home Workspace", systemImage: "square.grid.2x2", url: home),
-            SidebarLocation(id: "workspace:code", title: "Development", systemImage: "hammer", url: home.appendingPathComponent("Code", isDirectory: true)),
-            SidebarLocation(id: "workspace:downloads", title: "Downloads Review", systemImage: "tray.full", url: home.appendingPathComponent("Downloads", isDirectory: true))
-        ]
-        return candidates.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        .task {
+            model.refresh()
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                model.refresh()
+            }
+        }
     }
 
     private func locationRow(_ location: SidebarLocation) -> some View {
-        Label(L10n.text(location.title), systemImage: location.systemImage)
+        Button {
+            appModel.sidebarSelection = location.id
+            appModel.open(location.url)
+        } label: {
+            Label(L10n.text(location.title), systemImage: location.systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
             .tag(location.id)
             .contentShape(Rectangle())
-            .onTapGesture {
-                appModel.sidebarSelection = location.id
-                appModel.open(location.url)
-            }
     }
 
     private func tagRow(_ title: String, color: Color) -> some View {

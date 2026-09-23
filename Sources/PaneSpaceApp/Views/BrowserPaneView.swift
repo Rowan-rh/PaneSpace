@@ -11,21 +11,45 @@ struct BrowserPaneView: View {
 
     @State private var renameText = ""
     @State private var confirmsTrash = false
+    @State private var droppedURLs: [URL] = []
+    @State private var showsDropChoices = false
 
     var body: some View {
         VStack(spacing: 0) {
             TabStripView(model: model, slot: slot)
 
             if addressBarPosition == "top" {
-                PathBarView(model: model)
+                PathBarView(model: model, slot: slot)
                 Divider()
             }
 
             paneContent
 
+            if let operationErrorMessage = model.operationErrorMessage {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(operationErrorMessage)
+                        .font(.callout)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Button {
+                        model.dismissOperationError()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss error")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.orange.opacity(0.08))
+            }
+
             if addressBarPosition == "bottom" {
                 Divider()
-                PathBarView(model: model)
+                PathBarView(model: model, slot: slot)
             }
 
             if showStatusBar {
@@ -45,20 +69,33 @@ struct BrowserPaneView: View {
         .simultaneousGesture(TapGesture().onEnded {
             appModel.activePane = slot
         })
+        .dropDestination(for: URL.self) { urls, _ in
+            let localURLs = urls.filter(\.isFileURL)
+            guard !localURLs.isEmpty else { return false }
+            droppedURLs = localURLs
+            showsDropChoices = true
+            return true
+        }
+        .confirmationDialog("Transfer dropped items?", isPresented: $showsDropChoices) {
+            Button("Copy Here") {
+                appModel.transfer(droppedURLs, from: nil, to: slot, kind: .copy)
+            }
+            Button("Move Here") {
+                appModel.transfer(droppedURLs, from: nil, to: slot, kind: .move)
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .onDeleteCommand {
             if !model.selection.isEmpty {
                 confirmsTrash = true
             }
-        }
-        .onKeyPress(.space) {
-            model.previewSelection()
-            return .handled
         }
         .alert("Move to Trash?", isPresented: $confirmsTrash) {
             Button("Cancel", role: .cancel) {}
             Button("Move to Trash", role: .destructive) {
                 model.trashSelection()
             }
+            .disabled(model.isPerformingOperation)
         } message: {
             Text("The selected items will be moved to the Trash.")
         }
@@ -75,6 +112,7 @@ struct BrowserPaneView: View {
                         model.rename(item, to: renameText)
                         model.renameTarget = nil
                     }
+                    .disabled(model.isPerformingOperation)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -109,9 +147,9 @@ struct BrowserPaneView: View {
         } else {
             switch model.viewMode {
             case .list:
-                FileListView(model: model, compact: appModel.paneLayout.prefersCompactRows)
+                FileListView(model: model, slot: slot, compact: appModel.paneLayout.prefersCompactRows)
             case .columns:
-                ColumnBrowserView(model: model)
+                ColumnBrowserView(model: model, slot: slot)
             }
         }
     }
@@ -134,15 +172,31 @@ private struct TabStripView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 3) {
                     ForEach(model.tabs) { tab in
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder.fill")
-                                .font(.caption)
-                                .foregroundStyle(model.activeTabID == tab.id ? Color.accentColor : Color.secondary)
+                        HStack(spacing: 2) {
+                            Button {
+                                model.activateTab(tab.id)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "folder.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(
+                                            model.activeTabID == tab.id
+                                                ? Color.accentColor
+                                                : Color.secondary
+                                        )
 
-                            if pinnedTabStyle != "iconOnly" || model.activeTabID == tab.id {
-                                Text(tab.title)
-                                    .lineLimit(1)
+                                    if pinnedTabStyle != "iconOnly" || model.activeTabID == tab.id {
+                                        Text(tab.title)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(tab.title)
+                            .accessibilityAddTraits(
+                                model.activeTabID == tab.id ? [.isSelected] : []
+                            )
 
                             if model.tabs.count > 1, model.activeTabID == tab.id {
                                 Button {
@@ -162,8 +216,6 @@ private struct TabStripView: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(model.activeTabID == tab.id ? Color(nsColor: .controlBackgroundColor) : Color.clear)
                         )
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.activateTab(tab.id) }
                     }
 
                     Button {
@@ -192,8 +244,7 @@ private struct TabStripView: View {
     private var paneControl: some View {
         if appModel.paneLayout.visiblePaneCount > 1 {
             Button {
-                appModel.paneLayout = .single
-                appModel.activePane = .primary
+                appModel.closePane(at: slot)
             } label: {
                 Image(systemName: "minus")
                     .font(.caption2.weight(.semibold))
@@ -201,7 +252,8 @@ private struct TabStripView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 4)
-            .help("Close extra panes")
+            .help("Close pane")
+            .accessibilityLabel("Close pane")
         }
     }
 }
@@ -209,35 +261,226 @@ private struct TabStripView: View {
 private struct PathBarView: View {
     @EnvironmentObject private var appModel: AppModel
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+
+    @State private var isEditingLocation = false
+    @State private var locationText = ""
+    @State private var isSearchExpanded = false
+    @FocusState private var isLocationFocused: Bool
+    @FocusState private var isSearchFocused: Bool
 
     @AppStorage("showPaneNavigation") private var showPaneNavigation = true
     @AppStorage("showAddressReload") private var showAddressReload = true
     @AppStorage("showAddressActions") private var showAddressActions = true
 
     var body: some View {
-        HStack(spacing: 6) {
-            if showPaneNavigation {
-                ControlGroup {
-                    Button { model.goBack() } label: {
-                        Image(systemName: "chevron.left")
+        GeometryReader { geometry in
+            Group {
+                if isEditingLocation {
+                    HStack(spacing: 6) {
+                        locationControl
+                            .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                        searchControl(expandedWidth: searchFieldWidth(for: geometry.size.width))
                     }
-                    .disabled(!model.canGoBack)
-
-                    Button { model.goForward() } label: {
-                        Image(systemName: "chevron.right")
+                } else if geometry.size.width >= 540 {
+                    HStack(spacing: 6) {
+                        navigationControls
+                        locationControl
+                            .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                        searchControl(expandedWidth: 160)
+                        expandedActionControls
                     }
-                    .disabled(!model.canGoForward)
+                } else if geometry.size.width >= 400 {
+                    HStack(spacing: 6) {
+                        navigationControls
+                        locationControl
+                            .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                        searchControl(expandedWidth: 86)
+                        compactActionControls
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        locationControl
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                        searchControl(expandedWidth: 60)
+                        compactActionControls
+                    }
                 }
-                .controlSize(.small)
             }
+            .padding(.horizontal, 8)
+        }
+        .frame(height: 36)
+        .onChange(of: appModel.locationEditRequest) {
+            guard appModel.activePane == slot else { return }
+            beginLocationEditing()
+        }
+        .onChange(of: appModel.searchFocusRequest) {
+            guard appModel.activePane == slot else { return }
+            expandAndFocusSearch()
+        }
+        .onChange(of: model.searchText) {
+            if !model.searchText.isEmpty {
+                isSearchExpanded = true
+            }
+        }
+        .onAppear {
+            if !model.searchText.isEmpty {
+                isSearchExpanded = true
+            }
+        }
+        .onChange(of: model.locationErrorMessage) {
+            if isEditingLocation, model.locationErrorMessage != nil {
+                isLocationFocused = true
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if isEditingLocation, let error = model.locationErrorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 10)
+                    .offset(y: 16)
+                    .accessibilityLabel(error)
+            }
+        }
+        .padding(.bottom, isEditingLocation && model.locationErrorMessage != nil ? 16 : 0)
+    }
 
+    @ViewBuilder
+    private var locationControl: some View {
+        if isEditingLocation {
+            HStack(spacing: 4) {
+                TextField("Folder path", text: $locationText)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isLocationFocused)
+                    .onSubmit {
+                        Task {
+                            if await model.navigateToEnteredLocation(locationText) {
+                                isEditingLocation = false
+                                isLocationFocused = false
+                            }
+                        }
+                    }
+                    .onExitCommand { dismissLocationEditor() }
+                Button {
+                    dismissLocationEditor()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel location editing")
+            }
+            .frame(minWidth: 40, maxWidth: .infinity)
+            .layoutPriority(1)
+        } else {
             BreadcrumbView(model: model)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2, perform: beginLocationEditing)
+        }
+    }
 
-            TextField("Search", text: $model.searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 86, idealWidth: 150, maxWidth: 190)
+    private func dismissLocationEditor() {
+        isEditingLocation = false
+        isLocationFocused = false
+        model.clearLocationError()
+    }
 
+    private func beginLocationEditing() {
+        locationText = model.currentURL.path
+        model.clearLocationError()
+        isEditingLocation = true
+        isLocationFocused = true
+    }
+
+    @ViewBuilder
+    private var navigationControls: some View {
+        if showPaneNavigation {
+            ControlGroup {
+                Button { model.goBack() } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(!model.canGoBack)
+                .accessibilityLabel("Back")
+
+                Button { model.goForward() } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(!model.canGoForward)
+                .accessibilityLabel("Forward")
+            }
+            .controlSize(.small)
+            .fixedSize()
+        }
+    }
+
+    private var isSearchPresented: Bool {
+        isSearchExpanded || !model.searchText.isEmpty
+    }
+
+    private func searchControl(expandedWidth: CGFloat) -> some View {
+        Group {
+            if isSearchPresented {
+                HStack(spacing: 4) {
+                    TextField("Search", text: $model.searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isSearchFocused)
+                        .accessibilityLabel("Search in Pane")
+                        .help("Search in Pane")
+
+                    Button(action: clearSearch) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        model.searchText.isEmpty ? Text("Close Search") : Text("Clear Search")
+                    )
+                    .help(model.searchText.isEmpty ? Text("Close Search") : Text("Clear Search"))
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
+            } else {
+                Button(action: expandAndFocusSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Search in Pane")
+                .help("Search in Pane")
+                .transition(.opacity)
+            }
+        }
+        .frame(width: isSearchPresented ? expandedWidth : 24, alignment: .trailing)
+        .animation(.easeInOut(duration: 0.16), value: isSearchPresented)
+    }
+
+    private func searchFieldWidth(for toolbarWidth: CGFloat) -> CGFloat {
+        if toolbarWidth >= 540 { return 160 }
+        if toolbarWidth >= 400 { return 86 }
+        return 60
+    }
+
+    private func expandAndFocusSearch() {
+        isSearchExpanded = true
+        Task { @MainActor in
+            await Task.yield()
+            isSearchFocused = true
+        }
+    }
+
+    private func clearSearch() {
+        model.searchText = ""
+        isSearchFocused = false
+        isSearchExpanded = false
+    }
+
+    private var expandedActionControls: some View {
+        HStack(spacing: 8) {
             viewMenu
             filterMenu
 
@@ -246,95 +489,145 @@ private struct PathBarView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.plain)
+                .frame(width: 24)
                 .help("Refresh")
+                .accessibilityLabel("Refresh")
             }
 
             if showAddressActions {
-                Menu {
-                    Button("New Folder") { appModel.requestNewFolder() }
-                    Button("Show in Finder") { model.revealSelectionInFinder() }
-                        .disabled(model.selection.isEmpty)
-                    Divider()
-                    Button("Open in Terminal — Planned") {}
-                        .disabled(true)
-                    Button("Copy Path") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(model.currentURL.path, forType: .string)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 24)
+                actionsMenu
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 36)
+        .fixedSize()
+    }
+
+    private var compactActionControls: some View {
+        HStack(spacing: 2) {
+            viewMenu
+            filterMenu
+
+            if showAddressReload {
+                Button { model.refresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 22)
+                .help("Refresh")
+                .accessibilityLabel("Refresh")
+            }
+
+            if showAddressActions {
+                actionsMenu
+            }
+        }
+        .fixedSize()
     }
 
     private var viewMenu: some View {
         Menu {
-            ForEach(BrowserViewMode.allCases) { mode in
-                Button {
-                    model.setViewMode(mode)
-                } label: {
-                    if model.viewMode == mode {
-                        Label(L10n.text(mode.title), systemImage: "checkmark")
-                    } else {
-                        Label(L10n.text(mode.title), systemImage: mode.systemImage)
-                    }
-                }
-            }
-            Divider()
-            Button("Icons — Planned") {}.disabled(true)
-            Button("Gallery — Planned") {}.disabled(true)
+            viewMenuItems
         } label: {
             Image(systemName: model.viewMode.systemImage)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 24)
         .help("View Mode")
+        .accessibilityLabel("View Mode")
     }
 
     private var filterMenu: some View {
         Menu {
-            ForEach(FileSort.allCases) { option in
-                Button {
-                    model.setSort(option)
-                } label: {
-                    if model.sort == option {
-                        Label(L10n.text(option.rawValue), systemImage: model.sortAscending ? "arrow.up" : "arrow.down")
-                    } else {
-                        Text(L10n.text(option.rawValue))
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                model.toggleHiddenFiles()
-            } label: {
-                Text(L10n.text(model.showsHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files"))
-            }
+            filterMenuItems
         } label: {
             Image(systemName: "line.3.horizontal.decrease.circle")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .frame(width: 24)
         .help("Sort and Filter")
+        .accessibilityLabel("Sort and Filter")
+    }
+
+    private var actionsMenu: some View {
+        Menu {
+            actionMenuItems
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 24)
+        .help("Actions")
+        .accessibilityLabel("Actions")
+    }
+
+    @ViewBuilder
+    private var viewMenuItems: some View {
+        ForEach(BrowserViewMode.allCases) { mode in
+            Button {
+                model.setViewMode(mode)
+            } label: {
+                if model.viewMode == mode {
+                    Label(L10n.text(mode.title), systemImage: "checkmark")
+                } else {
+                    Label(L10n.text(mode.title), systemImage: mode.systemImage)
+                }
+            }
+        }
+        Divider()
+        Button("Icons — Planned") {}.disabled(true)
+        Button("Gallery — Planned") {}.disabled(true)
+    }
+
+    @ViewBuilder
+    private var filterMenuItems: some View {
+        ForEach(FileSort.allCases) { option in
+            Button {
+                model.setSort(option)
+            } label: {
+                if model.sort == option {
+                    Label(L10n.text(option.rawValue), systemImage: model.sortAscending ? "arrow.up" : "arrow.down")
+                } else {
+                    Text(L10n.text(option.rawValue))
+                }
+            }
+        }
+
+        Divider()
+
+        Button {
+            model.toggleHiddenFiles()
+        } label: {
+            Text(L10n.text(model.showsHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files"))
+        }
+    }
+
+    @ViewBuilder
+    private var actionMenuItems: some View {
+        Button("New Folder") { appModel.requestNewFolder() }
+        Button("Show in Finder") { model.revealSelectionInFinder() }
+            .disabled(model.selection.isEmpty)
+        Divider()
+        Button("Open in Terminal — Planned") {}
+            .disabled(true)
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(model.currentURL.path, forType: .string)
+        }
     }
 }
 
 private struct ColumnBrowserView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(model.columns) { column in
-                        ColumnView(model: model, column: column)
+                        ColumnView(model: model, slot: slot, column: column)
                             .frame(width: 250)
                             .id(column.id)
                         Divider()
@@ -354,6 +647,7 @@ private struct ColumnBrowserView: View {
 
 private struct ColumnView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
     let column: BrowserColumn
 
     var body: some View {
@@ -392,33 +686,46 @@ private struct ColumnView: View {
                 ScrollView {
                     LazyVStack(spacing: 1) {
                         ForEach(model.displayedItems(from: column.items)) { item in
-                            ColumnItemRow(item: item, isSelected: column.selectedItemID == item.id)
+                            Button {
+                                model.selectColumnItem(item, in: column.id)
+                            } label: {
+                                ColumnItemRow(
+                                    item: item,
+                                    isSelected: column.selectedItemID == item.id
+                                )
                                 .contentShape(Rectangle())
-                                .onTapGesture {
-                                    model.selectColumnItem(item, in: column.id)
-                                }
-                                .onTapGesture(count: 2) {
+                            }
+                            .buttonStyle(.plain)
+                            .draggable(item.url)
+                            .accessibilityLabel(item.name)
+                            .accessibilityValue(item.isDirectory ? "Folder" : item.kind)
+                            .simultaneousGesture(
+                                TapGesture(count: 2).onEnded {
                                     if !item.isDirectory {
                                         model.open(item)
                                     }
                                 }
-                                .contextMenu {
-                                    Button("Open") { model.open(item) }
-                                    Button("Quick Look") {
-                                        model.selection = [item.id]
-                                        model.previewSelection()
-                                    }
-                                    Button("Show in Finder") {
-                                        model.selection = [item.id]
-                                        model.revealSelectionInFinder()
-                                    }
-                                    Divider()
-                                    Button("Rename…") { model.renameTarget = item }
-                                    Button("Move to Trash", role: .destructive) {
-                                        model.selection = [item.id]
-                                        model.trashSelection()
-                                    }
+                            )
+                            .contextMenu {
+                                Button("Open") { model.open(item) }
+                                Button("Quick Look") {
+                                    model.selection = [item.id]
+                                    model.previewSelection()
                                 }
+                                Button("Show in Finder") {
+                                    model.selection = [item.id]
+                                    model.revealSelectionInFinder()
+                                }
+                                Divider()
+                                TransferActionsMenu(model: model, slot: slot, item: item)
+                                Button("Rename…") { model.renameTarget = item }
+                                    .disabled(model.isPerformingOperation)
+                                Button("Move to Trash", role: .destructive) {
+                                    model.selection = [item.id]
+                                    model.trashSelection()
+                                }
+                                .disabled(model.isPerformingOperation)
+                            }
                         }
                     }
                     .padding(4)
@@ -511,6 +818,7 @@ private struct BreadcrumbView: View {
 
 private struct FileListView: View {
     @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
     let compact: Bool
 
     @AppStorage("rowDensity") private var rowDensity = "comfortable"
@@ -530,6 +838,7 @@ private struct FileListView: View {
                     .onTapGesture(count: 2) {
                         model.open(item)
                     }
+                    .draggable(item.url)
                     .contextMenu {
                         Button("Open") { model.open(item) }
                         Button("Quick Look") {
@@ -541,19 +850,62 @@ private struct FileListView: View {
                             model.revealSelectionInFinder()
                         }
                         Divider()
-                        Button("Copy to Other Pane — Planned") {}
-                            .disabled(true)
+                        TransferActionsMenu(model: model, slot: slot, item: item)
                         Button("Rename…") {
                             model.renameTarget = item
                         }
+                        .disabled(model.isPerformingOperation)
                         Button("Move to Trash", role: .destructive) {
                             model.selection = [item.id]
                             model.trashSelection()
                         }
+                        .disabled(model.isPerformingOperation)
                     }
             }
         }
         .listStyle(.inset)
+    }
+}
+
+private struct TransferActionsMenu: View {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+    let item: FileItem
+
+    var body: some View {
+        if !targets.isEmpty {
+            Menu("Copy to Pane") {
+                ForEach(targets) { target in
+                    Button(title(for: target)) {
+                        appModel.transfer(urls, from: slot, to: target, kind: .copy)
+                    }
+                }
+            }
+            Menu("Move to Pane") {
+                ForEach(targets) { target in
+                    Button(title(for: target)) {
+                        appModel.transfer(urls, from: slot, to: target, kind: .move)
+                    }
+                }
+            }
+        }
+    }
+
+    private var targets: [PaneSlot] {
+        appModel.paneLayout.visibleSlots.filter { $0 != slot }
+    }
+
+    private var urls: [URL] {
+        if model.selection.contains(item.id) {
+            return model.selectedItems.map(\.url)
+        }
+        return [item.url]
+    }
+
+    private func title(for target: PaneSlot) -> String {
+        let index = PaneSlot.allCases.firstIndex(of: target) ?? 0
+        return L10n.format("Pane %lld", Int64(index + 1))
     }
 }
 
@@ -631,7 +983,7 @@ private struct StatusBarView: View {
                 Text(L10n.format("%lld selected", Int64(model.selection.count)))
             }
 
-            if let freeSpace {
+            if let freeSpace = model.availableCapacity {
                 Text("•")
                 Text(L10n.format("%@ available", ByteCountFormatter.string(fromByteCount: freeSpace, countStyle: .file)))
             }
@@ -656,8 +1008,4 @@ private struct StatusBarView: View {
         .frame(height: 24)
     }
 
-    private var freeSpace: Int64? {
-        try? model.currentURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            .volumeAvailableCapacityForImportantUsage
-    }
 }

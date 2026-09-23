@@ -13,23 +13,25 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [x] Local provider boundary and initial tests
 - [x] Native settings center and live appearance controls
 - [x] List and multi-level column browsing modes
-- [ ] Persist window, pane, and tab state
-- [ ] Add CI for build and tests
+- [x] Persist pane layout, active pane, tabs, and navigation history
+- [x] Persist window placement and dimensions
+- [x] Add CI for build and tests
 
 ## 0.2 — Reliable file operations
 
-- [ ] Copy and move job queue
-- [ ] Progress, cancellation, retry, and operation history
-- [ ] Name-conflict decisions: keep both, replace, skip, and apply to all
-- [ ] Drag and drop within and between panes
+- [x] Local copy and move job queue
+- [x] Item progress, cancellation, retry, and session task list
+- [x] Name-conflict decisions: keep both, replace, skip, and apply to all
+- [x] Local file URL drag and drop into panes
+- [ ] Byte progress and persistent operation history
 - [ ] Undo support where platform behavior permits
 - [ ] Large-directory loading without blocking the UI
-- [ ] File-system observation and live refresh
+- [x] File-system observation and live refresh
 
 ## 0.3 — Views and workflows
 
 - [ ] Grid and gallery modes
-- [ ] Breadcrumb path editor
+- [x] Breadcrumb path editor and pane cycling shortcuts
 - [ ] Saved workspaces
 - [ ] Command palette and configurable keyboard shortcuts
 - [ ] Archive creation and extraction

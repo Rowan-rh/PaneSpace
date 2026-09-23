@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum PaneSlot: String, CaseIterable, Identifiable {
+enum PaneSlot: String, CaseIterable, Identifiable, Codable, Sendable {
     case primary
     case secondary
     case tertiary
@@ -10,7 +10,7 @@ enum PaneSlot: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum PaneLayout: String, CaseIterable, Identifiable {
+enum PaneLayout: String, CaseIterable, Identifiable, Codable, Sendable {
     case single
     case twoColumns
     case twoRows

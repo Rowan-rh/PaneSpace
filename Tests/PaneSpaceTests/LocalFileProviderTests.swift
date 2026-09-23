@@ -18,9 +18,9 @@ final class LocalFileProviderTests: XCTestCase {
         }
     }
 
-    func testCreatesAndListsFolder() throws {
-        let created = try provider.createFolder(named: "Projects", in: temporaryDirectory)
-        let items = try provider.contents(of: temporaryDirectory, showsHiddenFiles: false)
+    func testCreatesAndListsFolder() async throws {
+        let created = try await provider.createFolder(named: "Projects", in: temporaryDirectory)
+        let items = try await provider.contents(of: temporaryDirectory, showsHiddenFiles: false)
 
         XCTAssertEqual(items.count, 1)
         XCTAssertEqual(
@@ -30,17 +30,35 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertEqual(items.first?.isDirectory, true)
     }
 
-    func testRenamesItem() throws {
+    func testRenamesItem() async throws {
         let original = temporaryDirectory.appendingPathComponent("before.txt")
         try Data("hello".utf8).write(to: original)
 
-        let renamed = try provider.rename(original, to: "after.txt")
+        let renamed = try await provider.rename(original, to: "after.txt")
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: original.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.path))
     }
 
-    func testRejectsInvalidNames() throws {
-        XCTAssertThrowsError(try provider.createFolder(named: "bad/name", in: temporaryDirectory))
+    func testRejectsInvalidNames() async throws {
+        for name in ["bad/name", ".", "..", "\0"] {
+            do {
+                _ = try await provider.createFolder(named: name, in: temporaryDirectory)
+                XCTFail("Expected invalid name: \(name)")
+            } catch let error as FileProviderError {
+                XCTAssertEqual(error, .invalidName)
+            }
+        }
+    }
+
+    func testNormalizesNameConflicts() async throws {
+        _ = try await provider.createFolder(named: "Projects", in: temporaryDirectory)
+
+        do {
+            _ = try await provider.createFolder(named: "Projects", in: temporaryDirectory)
+            XCTFail("Expected a name conflict")
+        } catch let error as FileProviderError {
+            XCTAssertEqual(error, .itemAlreadyExists)
+        }
     }
 }

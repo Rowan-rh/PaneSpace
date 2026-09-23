@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: macos-26
@@ -23,13 +27,13 @@ jobs:
           swift --version
           xcodebuild -version
 
-      - name: Run tests
-        run: swift test
+      - name: Run tests with warnings as errors
+        run: swift test -Xswiftc -warnings-as-errors
 
       - name: Build application bundle
         run: make app
 
-      - name: Verify application bundle
+      - name: Verify application signature
         run: codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
 
       - name: Upload development bundle

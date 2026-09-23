@@ -1,13 +1,13 @@
-# Development guide
+# 开发指南
 
-## Requirements
+## 环境要求
 
-- macOS 26.0 or newer
-- Xcode 26 or newer
-- Swift 6.2 or newer
-- Git and GitHub CLI for repository workflows
+- macOS 26.0 或更新版本
+- Xcode 26 或更新版本
+- Swift 6.2 或更新版本
+- 使用 Git 和 GitHub CLI 参与仓库分支及合入请求流程
 
-## Common commands
+## 常用命令
 
 ```bash
 swift build
@@ -15,67 +15,84 @@ swift test
 swift run PaneSpace
 make app
 open dist/PaneSpace.app
+codesign --verify --deep --strict dist/PaneSpace.app
 ```
 
-`make app` produces an ad-hoc signed development bundle. Public releases will use Developer ID signing, notarization, and release automation added in a later milestone.
+`make app` 会生成使用 ad-hoc 签名的开发版应用包。构建脚本会在 Info.plist 中写入受保护目录和外部卷的本地化用途说明，便于 macOS 显示系统授权提示。公开发行版本后续使用 Developer ID 签名、公证和发布自动化。
 
-## Repository layout
+## 仓库目录
 
 ```text
 Sources/PaneSpaceApp/
-  Models/       File metadata and navigation values
-  Resources/    Localized strings and bundled assets
-  Services/     Providers and macOS integrations
-  State/        Observable application and pane state
-  Support/      Shared application helpers
-  Views/        SwiftUI presentation
-Tests/          Unit and integration tests
-docs/           Product, roadmap, and architecture decisions
-scripts/        Repeatable local build tooling
+  Models/       文件元数据和导航值类型
+  Resources/    本地化字符串和内置素材
+  Services/     Provider 和 macOS 集成
+  State/        应用与面板状态
+  Support/      通用应用辅助代码
+  Views/        SwiftUI 展示层
+Tests/          单元和集成测试
+docs/           产品说明、路线图和架构决策
+scripts/        可重复执行的本地构建工具
 ```
 
-## Localization
+## 本地化
 
-English source strings are the development language. Simplified Chinese translations live in `Sources/PaneSpaceApp/Resources/zh-Hans.lproj/Localizable.strings`. Static SwiftUI labels use the standard localization lookup; strings passed through reusable views or model values use `L10n` so they remain localizable.
+英文是 Swift 源码中的默认字符串；简体中文翻译位于 `Sources/PaneSpaceApp/Resources/zh-Hans.lproj/Localizable.strings`。SwiftUI 静态文字使用标准本地化查找；可复用视图或模型中的文字使用 `L10n`，确保运行时可以本地化。
 
-The Swift package processes localization resources for source builds. `scripts/build-app.sh` also copies supported `.lproj` directories into the standalone application bundle. When adding a language, update both `CFBundleLocalizations` and the copied resource directories in that script, then launch the built app with that language during UI verification.
+Swift Package 会处理源代码构建所需的本地化资源。`scripts/build-app.sh` 也会把支持的 `.lproj` 目录复制到独立应用包。新增语言时，同时更新 `CFBundleLocalizations` 和构建脚本中的资源复制逻辑，并在界面验证时使用该语言启动应用。
 
-## Application icon
+## 应用图标
 
-The editable raster master is `Assets/PaneSpace-AppIcon.png`; the generated macOS icon family is `Assets/PaneSpace.icns`. Keep both files in sync when the icon changes. The standalone bundle build copies the `.icns` file into `Contents/Resources` and records it in `CFBundleIconFile` before signing.
+可编辑的栅格源文件是 `Assets/PaneSpace-AppIcon.png`，生成的 macOS 图标文件是 `Assets/PaneSpace.icns`。修改图标时保持两者同步。应用包构建会将 `.icns` 复制到 `Contents/Resources`，写入 `CFBundleIconFile` 后再签名。
 
-## Adding a provider
+## 添加 Provider
 
-1. Define the provider's capabilities before implementing UI.
-2. Keep credentials in Keychain and authentication outside view code.
-3. Normalize provider errors into user-actionable categories.
-4. Make listing and transfer operations cancellable.
-5. Write provider contract tests using a deterministic fixture or local test server.
-6. Update `ARCHITECTURE.md` and add an ADR when the provider changes shared contracts.
+1. 实现界面前先定义 Provider 能力。
+2. 凭证保存在 Keychain，认证逻辑放在视图之外。
+3. 将错误归一化为用户可采取行动的类别。
+4. 让目录读取和传输操作支持异步与取消。
+5. 使用确定性夹具或本地测试服务器编写 Provider 契约测试。
+6. 共享契约变化时更新 `ARCHITECTURE.md` 并添加 ADR。
 
-The current `FileProviding` protocol is deliberately small and synchronous for the local MVP. Do not force remote I/O into this shape. The protocol should evolve to an asynchronous capability-oriented interface before the first remote provider lands.
+当前 `FileProviding` 协议保持精简并以异步方式工作。本地 actor 将阻塞的 `FileManager` 调用隔离在主线程之外。首个远程 Provider 上线前，应补充能力报告、进度和 Provider 级取消；不要把这些逻辑放入 SwiftUI 视图。
 
-## UI verification checklist
+## 界面验证清单
 
-- launch the generated application bundle;
-- check single-pane and dual-pane layouts;
-- resize the window to its minimum dimensions;
-- test keyboard navigation and VoiceOver labels for changed controls;
-- verify long file names and non-Latin names;
-- verify the English and Simplified Chinese interfaces, including the settings close controls;
-- test empty folders, permission failures, disconnected volumes, and large directories.
+- 启动生成的应用包。
+- 检查单面板和双面板布局；影响共享面板内容时两种布局都要检查。
+- 将窗口缩放到最小尺寸，检查路径栏和搜索控件的布局。
+- 测试改动控件的键盘操作和 VoiceOver 名称。
+- 检查长文件名和非拉丁字符。
+- 检查英文与简体中文界面，包括设置窗口的关闭控件。
+- 按改动范围检查空目录、权限错误、已断开的卷和大目录。
 
-## Release outline
+## 自动化验证
 
-1. Run the full test suite and UI smoke checks.
-2. Build the Release configuration.
-3. Sign with a Developer ID Application certificate.
-4. Submit for Apple notarization and staple the ticket.
-5. Create a versioned Git tag and GitHub release.
-6. Publish checksums and release notes.
+提交前至少运行 `swift test`、`make app` 和应用包签名检查。GitHub Actions 当前在针对 `main` 的推送和合入请求上运行以下自动检查：
 
-The signing and notarization steps are intentionally not automated until repository secrets and a release policy are approved.
+```bash
+swift test -Xswiftc -warnings-as-errors
+make app
+codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
+```
 
-## Repository policy
+CI 不会启动应用，也不会执行桌面界面检查；改动界面的人工 macOS 验证仍是完成条件。更完整的提案、分支、合并和归档流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
 
-The desired lightweight `main` branch ruleset is stored in `.github/rulesets/main.json`. It prevents branch deletion and force pushes without requiring pull requests for the current single-maintainer phase. If collaboration expands, add required pull requests and CI checks through a new reviewed policy change.
+## Git 分支和发布
+
+默认从仓库实际存在的 `develop` 分支建立聚焦分支，开发完成后保留合并提交合回 `develop`，推送后创建目标为 `main` 的合入请求。仓库目前没有名为 `developers` 的分支。项目维护者授权时可以直接操作 `main`，但必须保留提交/合并记录，不得强制推送，并用中文说明改动和验证结果。详细步骤见贡献指南。
+
+发布步骤：
+
+1. 运行完整测试和界面冒烟检查。
+2. 构建 Release 配置。
+3. 使用 Developer ID Application 证书签名。
+4. 提交 Apple 公证并 stapling 公证票据。
+5. 创建版本化 Git 标签和 GitHub Release。
+6. 发布校验和与发行说明。
+
+在仓库密钥和发布政策获批前，不自动执行签名与公证。
+
+## 仓库分支规则
+
+期望的轻量 `main` 规则集保存在 `.github/rulesets/main.json`。它禁止删除分支和强制推送，但当前单人维护阶段没有强制要求 PR。本文和贡献指南将 PR 作为默认交付约定；如果协作规模变化，再通过评审调整规则集。

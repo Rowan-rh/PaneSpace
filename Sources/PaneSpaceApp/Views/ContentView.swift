@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("sidebarWidth") private var sidebarWidth = 196.0
     @AppStorage("accentColor") private var accentColor = "indigo"
     @AppStorage("themeIntensity") private var themeIntensity = 0.12
@@ -27,6 +28,13 @@ struct ContentView: View {
                 }
         }
         .tint(accent)
+        .background(WindowFrameAutosaver())
+        .background(PaneKeyboardMonitor { backward in
+            appModel.cycleActivePane(backward: backward)
+        })
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            TransferCenterView(queue: appModel.transferQueue)
+        }
         .toolbar {
             if showToolbarNavigation {
                 ToolbarItemGroup(placement: .navigation) {
@@ -37,6 +45,7 @@ struct ContentView: View {
                     }
                     .disabled(!appModel.activePaneModel.canGoBack)
                     .help("Back")
+                    .accessibilityLabel("Back")
 
                     Button {
                         appModel.activePaneModel.goForward()
@@ -45,6 +54,7 @@ struct ContentView: View {
                     }
                     .disabled(!appModel.activePaneModel.canGoForward)
                     .help("Forward")
+                    .accessibilityLabel("Forward")
 
                     Button {
                         appModel.activePaneModel.goUp()
@@ -52,6 +62,7 @@ struct ContentView: View {
                         Image(systemName: "arrow.up")
                     }
                     .help("Parent Folder")
+                    .accessibilityLabel("Parent Folder")
                 }
             }
 
@@ -62,6 +73,8 @@ struct ContentView: View {
                     Image(systemName: "folder.badge.plus")
                 }
                 .help("New Folder")
+                .accessibilityLabel("New Folder")
+                .disabled(appModel.activePaneModel.isPerformingOperation)
 
                 Button {
                     appModel.activePaneModel.addTab()
@@ -69,6 +82,7 @@ struct ContentView: View {
                     Image(systemName: "plus.square.on.square")
                 }
                 .help("New Tab")
+                .accessibilityLabel("New Tab")
 
                 Button {
                     showsLayoutPicker.toggle()
@@ -77,6 +91,7 @@ struct ContentView: View {
                         .frame(width: 23, height: 17)
                 }
                 .help("Pane Layout")
+                .accessibilityLabel("Pane Layout")
                 .popover(isPresented: $showsLayoutPicker, arrowEdge: .bottom) {
                     PaneLayoutPicker(selection: $appModel.paneLayout)
                 }
@@ -87,6 +102,7 @@ struct ContentView: View {
                     Image(systemName: "gearshape")
                 }
                 .help("Settings")
+                .accessibilityLabel("Settings")
             }
         }
         .sheet(isPresented: $appModel.isCreatingFolder) {
@@ -105,6 +121,7 @@ struct ContentView: View {
                         appModel.isCreatingFolder = false
                         newFolderName = "New Folder"
                     }
+                    .disabled(appModel.activePaneModel.isPerformingOperation)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -114,6 +131,18 @@ struct ContentView: View {
         .sheet(isPresented: $appModel.isShowingSettings) {
             SettingsView()
                 .frame(width: 860, height: 620)
+        }
+        .onAppear {
+            appModel.windowDidAppear()
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase == .inactive || scenePhase == .background {
+                appModel.saveSession()
+            }
+        }
+        .onDisappear {
+            appModel.windowDidDisappear()
+            appModel.saveSession()
         }
     }
 
