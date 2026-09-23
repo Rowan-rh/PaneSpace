@@ -79,7 +79,7 @@ Add tests for:
 - operation queue state transitions;
 - regressions fixed by the change.
 
-Changes to visible UI must also be launched and inspected on macOS. Verify both single-pane and dual-pane layouts when the change affects shared content.
+改动可见界面时必须在 macOS 启动并检查；涉及共享面板内容时，按[开发指南](docs/DEVELOPMENT.md)分别验证单面板和双面板布局。
 
 ## Documentation
 
@@ -89,13 +89,14 @@ Changes to visible UI must also be launched and inspected on macOS. Verify both 
 - Add an ADR for durable technical decisions and mark superseded ADRs instead of deleting them.
 - Update `docs/DEVELOPMENT.md` when build, test, signing, or release steps change.
 
-## Git workflow
+## Git 工作流
 
-- Work from `main` using focused branches.
-- Use imperative commit subjects, such as `Add cancellable copy jobs`.
-- Keep generated `.build/` and `dist/` output out of Git.
-- Do not mix broad formatting changes with functional changes.
-- Pull requests must describe behavior, verification, screenshots for UI changes, and known follow-up work.
+- 默认从仓库开发集成分支 `develop` 创建聚焦的功能分支；本仓库当前没有名为 `developers` 的分支。
+- 开发并完成验证后，以保留合并记录的方式将功能分支合回 `develop`，推送 `develop`，并创建以 `main` 为目标的合入请求。
+- 项目维护者可以授权直接操作 `main`。即使走直接路径，也要保留清晰的提交或合并历史，不得强制推送，并用中文记录变更和验证结果。
+- 提交说明、合入请求标题和描述优先使用中文，简明写出改动和验证结果。
+- 不提交 `.build/`、`dist/` 等构建产物、凭证或个人路径；不要把大范围格式化与功能改动混在一起。
+- 合入请求需要说明用户可见行为、验证结果、界面变更截图和已知后续工作。
 
 ## Definition of done
 

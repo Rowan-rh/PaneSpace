@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     @Published var isCreatingFolder = false
     @Published var isShowingSettings = false
     @Published private(set) var locationEditRequest = 0
+    @Published private(set) var searchFocusRequest = 0
     @Published private(set) var transferQueue = FileTransferQueueModel()
 
     @Published private(set) var primaryPane: BrowserPaneModel
@@ -107,6 +108,10 @@ final class AppModel: ObservableObject {
         activePaneModel.tabs.count > 1 || paneLayout.visiblePaneCount > 1
     }
 
+    var canAddPane: Bool {
+        paneLayout.visiblePaneCount < PaneSlot.allCases.count
+    }
+
     var canTransferSelection: Bool {
         paneLayout.visiblePaneCount > 1 && !activePaneModel.selectedItems.isEmpty
     }
@@ -125,6 +130,10 @@ final class AppModel: ObservableObject {
 
     func requestLocationEditing() {
         locationEditRequest += 1
+    }
+
+    func requestSearchFocus() {
+        searchFocusRequest += 1
     }
 
     func pane(for slot: PaneSlot) -> BrowserPaneModel {
@@ -146,6 +155,40 @@ final class AppModel: ObservableObject {
 
     func toggleSecondPane() {
         paneLayout = paneLayout == .single ? .twoColumns : .single
+    }
+
+    func addPane() {
+        guard canAddPane else { return }
+
+        let currentURL = activePaneModel.currentURL
+        let nextLayout: PaneLayout
+        switch paneLayout {
+        case .single:
+            let preferredLayout = PaneLayout(rawValue: defaults.string(forKey: "defaultPaneLayout") ?? "")
+            switch preferredLayout {
+            case .twoRows, .threeRows, .fourRows, .primaryTop, .primaryBottom:
+                nextLayout = .twoRows
+            default:
+                nextLayout = .twoColumns
+            }
+        case .twoColumns:
+            nextLayout = .threeColumns
+        case .twoRows:
+            nextLayout = .threeRows
+        case .primaryLeft, .primaryRight, .primaryTop, .primaryBottom:
+            nextLayout = .fourGrid
+        case .threeColumns:
+            nextLayout = .fourColumns
+        case .threeRows:
+            nextLayout = .fourRows
+        case .fourGrid, .fourColumns, .fourRows:
+            return
+        }
+
+        paneLayout = nextLayout
+        guard let newPaneSlot = nextLayout.visibleSlots.last else { return }
+        pane(for: newPaneSlot).navigate(to: currentURL, recordsHistory: false)
+        activePane = newPaneSlot
     }
 
     func transfer(

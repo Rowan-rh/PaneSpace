@@ -265,7 +265,9 @@ private struct PathBarView: View {
 
     @State private var isEditingLocation = false
     @State private var locationText = ""
+    @State private var isSearchExpanded = false
     @FocusState private var isLocationFocused: Bool
+    @FocusState private var isSearchFocused: Bool
 
     @AppStorage("showPaneNavigation") private var showPaneNavigation = true
     @AppStorage("showAddressReload") private var showAddressReload = true
@@ -275,15 +277,19 @@ private struct PathBarView: View {
         GeometryReader { geometry in
             Group {
                 if isEditingLocation {
-                    locationControl
+                    HStack(spacing: 6) {
+                        locationControl
+                            .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                        searchControl(expandedWidth: searchFieldWidth(for: geometry.size.width))
+                    }
                 } else if geometry.size.width >= 540 {
                     HStack(spacing: 6) {
                         navigationControls
                         locationControl
                             .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
-                        searchField
-                            .frame(width: 160)
+                        searchControl(expandedWidth: 160)
                         expandedActionControls
                     }
                 } else if geometry.size.width >= 400 {
@@ -292,8 +298,7 @@ private struct PathBarView: View {
                         locationControl
                             .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
-                        searchField
-                            .frame(width: 86)
+                        searchControl(expandedWidth: 86)
                         compactActionControls
                     }
                 } else {
@@ -301,8 +306,7 @@ private struct PathBarView: View {
                         locationControl
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
-                        searchField
-                            .frame(width: 60)
+                        searchControl(expandedWidth: 60)
                         compactActionControls
                     }
                 }
@@ -312,10 +316,21 @@ private struct PathBarView: View {
         .frame(height: 36)
         .onChange(of: appModel.locationEditRequest) {
             guard appModel.activePane == slot else { return }
-            locationText = model.currentURL.path
-            model.clearLocationError()
-            isEditingLocation = true
-            isLocationFocused = true
+            beginLocationEditing()
+        }
+        .onChange(of: appModel.searchFocusRequest) {
+            guard appModel.activePane == slot else { return }
+            expandAndFocusSearch()
+        }
+        .onChange(of: model.searchText) {
+            if !model.searchText.isEmpty {
+                isSearchExpanded = true
+            }
+        }
+        .onAppear {
+            if !model.searchText.isEmpty {
+                isSearchExpanded = true
+            }
         }
         .onChange(of: model.locationErrorMessage) {
             if isEditingLocation, model.locationErrorMessage != nil {
@@ -365,6 +380,8 @@ private struct PathBarView: View {
             BreadcrumbView(model: model)
                 .frame(minWidth: 40, maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2, perform: beginLocationEditing)
         }
     }
 
@@ -372,6 +389,13 @@ private struct PathBarView: View {
         isEditingLocation = false
         isLocationFocused = false
         model.clearLocationError()
+    }
+
+    private func beginLocationEditing() {
+        locationText = model.currentURL.path
+        model.clearLocationError()
+        isEditingLocation = true
+        isLocationFocused = true
     }
 
     @ViewBuilder
@@ -395,9 +419,64 @@ private struct PathBarView: View {
         }
     }
 
-    private var searchField: some View {
-        TextField("Search", text: $model.searchText)
-            .textFieldStyle(.roundedBorder)
+    private var isSearchPresented: Bool {
+        isSearchExpanded || !model.searchText.isEmpty
+    }
+
+    private func searchControl(expandedWidth: CGFloat) -> some View {
+        Group {
+            if isSearchPresented {
+                HStack(spacing: 4) {
+                    TextField("Search", text: $model.searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isSearchFocused)
+                        .accessibilityLabel("Search in Pane")
+                        .help("Search in Pane")
+
+                    Button(action: clearSearch) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        model.searchText.isEmpty ? Text("Close Search") : Text("Clear Search")
+                    )
+                    .help(model.searchText.isEmpty ? Text("Close Search") : Text("Clear Search"))
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .trailing)))
+            } else {
+                Button(action: expandAndFocusSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Search in Pane")
+                .help("Search in Pane")
+                .transition(.opacity)
+            }
+        }
+        .frame(width: isSearchPresented ? expandedWidth : 24, alignment: .trailing)
+        .animation(.easeInOut(duration: 0.16), value: isSearchPresented)
+    }
+
+    private func searchFieldWidth(for toolbarWidth: CGFloat) -> CGFloat {
+        if toolbarWidth >= 540 { return 160 }
+        if toolbarWidth >= 400 { return 86 }
+        return 60
+    }
+
+    private func expandAndFocusSearch() {
+        isSearchExpanded = true
+        Task { @MainActor in
+            await Task.yield()
+            isSearchFocused = true
+        }
+    }
+
+    private func clearSearch() {
+        model.searchText = ""
+        isSearchFocused = false
+        isSearchExpanded = false
     }
 
     private var expandedActionControls: some View {

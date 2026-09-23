@@ -22,6 +22,12 @@ struct PaneSpaceApp: App {
         .defaultSize(width: 1_180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
+                Button("New Pane") {
+                    appModel.addPane()
+                }
+                .disabled(!appModel.canAddPane)
+                .keyboardShortcut("n", modifiers: .command)
+
                 Button("New Tab") {
                     appModel.activePaneModel.addTab()
                 }
@@ -64,6 +70,8 @@ struct PaneSpaceApp: App {
             }
 
             CommandMenu("Navigate") {
+                Button("Search in Pane") { appModel.requestSearchFocus() }
+                    .keyboardShortcut("f", modifiers: .command)
                 Button("Go to Folder") { appModel.requestLocationEditing() }
                     .keyboardShortcut("l", modifiers: .command)
                 Button("Back") { appModel.activePaneModel.goBack() }

@@ -1,21 +1,23 @@
-## Summary
+## 变更摘要
 
-Describe the user-visible behavior and the reason for the change.
+说明用户可见行为、改动原因和影响范围。
 
-## Verification
+## 验证
 
-- [ ] `swift test`
-- [ ] `make app`
-- [ ] Application bundle signature verified
-- [ ] Changed UI exercised in single-pane mode
-- [ ] Changed UI exercised in dual-pane mode
+- [ ] `swift test` 已通过
+- [ ] `make app` 已通过
+- [ ] 应用包签名校验已通过
+- [ ] 如果改动界面，已在 macOS 启动并检查单面板布局
+- [ ] 如果改动影响共享面板内容，已检查双面板布局
+- [ ] 已检查相关键盘操作、无障碍名称和中英文界面
 
-## Documentation and risk
+## 文档和风险
 
-- [ ] Documentation is updated or not required
-- [ ] Tests cover new file-operation behavior
-- [ ] No credentials, personal paths, or generated files are included
+- [ ] 已更新相关说明，或确认不需要更新
+- [ ] 如果涉及文件操作，已添加或更新回归测试
+- [ ] 没有提交凭证、个人路径或构建产物
+- [ ] 已说明已知风险和后续工作，或确认没有
 
-## Screenshots
+## 截图
 
-Add before-and-after screenshots for visible UI changes.
+界面有可见变化时附上更新前后截图，并说明对应场景。

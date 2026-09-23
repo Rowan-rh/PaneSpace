@@ -152,6 +152,7 @@
 "Navigate" = "导航";
 "Navigation" = "导航";
 "New Folder" = "新建文件夹";
+"New Pane" = "新建面板";
 "New Tab" = "新建标签";
 "New Tabs" = "新标签";
 "New tab" = "新建标签";
@@ -206,6 +207,9 @@
 "SFTP, SMB, and WebDAV providers." = "SFTP、SMB 和 WebDAV 文件服务。";
 "Scope" = "范围";
 "Search" = "搜索";
+"Search in Pane" = "搜索当前面板";
+"Clear Search" = "清除搜索";
+"Close Search" = "关闭搜索";
 "Search file contents" = "搜索文件内容";
 "Select" = "选择";
 "Server Connections" = "服务器连接";
