@@ -21,6 +21,7 @@ FileProviding protocol
     └── WebDAVProvider     planned
 
 AppModel ─── FileTransferQueueModel ─── LocalTransferService
+AppModel ─── WorkspaceShortcutsModel ─── UserDefaults / LocalPathResolver
 BrowserPaneModel ─── LocalDirectoryObserver / LocalPathResolver
 ```
 
@@ -63,6 +64,10 @@ Each provider should eventually report:
 Local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. `FileTransferQueueModel` runs local copy and move jobs serially, publishes item progress, cancellation, retry, and conflict decisions, and retains a session-only task list. `LocalTransferService` stages a complete copy in the destination directory before publishing it. Replace moves the old destination to Trash, and Move trashes the source only after the destination is complete. A failed source removal can be retried without copying again. Byte progress, persistent history, and remote transfers remain future work. The safety tradeoffs are recorded in [ADR 0006](docs/adr/0006-staged-local-transfers.md).
 
 Visible local panes observe their current directory and coalesce file-system events before reloading. Completion of a transfer explicitly refreshes affected panes. `LocalPathResolver` validates typed paths outside the main actor; `BrowserPaneModel` changes history only after validation succeeds.
+
+## Sidebar
+
+`SidebarModel` loads favorites and mounted volumes from `SidebarLocationProviding`. User-defined workspaces live in `WorkspaceShortcutsModel`, which `AppModel` shares between the sidebar and Settings. It stores name, SF Symbol, and folder path as JSON in preferences, validates paths through `LocalPathResolver`, and checks folder availability off the main actor. Selecting a sidebar row opens it in the active pane, and the sidebar highlight follows the active pane's location. Workspaces whose folder is missing stay listed but cannot be selected.
 
 ## Security model
 

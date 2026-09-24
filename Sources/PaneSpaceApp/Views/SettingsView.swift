@@ -352,6 +352,8 @@ private struct SidebarSettingsPage: View {
                 SettingsToggle("Tags", isOn: $showTagsGroup)
                 SettingsToggle("Show volume free space", isOn: $showVolumeFreeSpace, planned: true)
             }
+
+            WorkspaceSettingsGroup()
         }
     }
 }
@@ -601,6 +603,7 @@ private struct ExtensionSettingsPage: View {
 }
 
 private struct AdvancedSettingsPage: View {
+    @EnvironmentObject private var appModel: AppModel
     @AppStorage("betaUpdates") private var betaUpdates = false
     @AppStorage("diagnosticLogging") private var diagnosticLogging = false
     @State private var confirmsReset = false
@@ -632,6 +635,7 @@ private struct AdvancedSettingsPage: View {
 
     private func resetDefaults() {
         PaneSpacePreferences.reset()
+        appModel.workspaceShortcuts.reload()
     }
 }
 
@@ -680,7 +684,7 @@ private struct SettingsPage<Content: View>: View {
     }
 }
 
-private struct SettingsGroup<Content: View>: View {
+struct SettingsGroup<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 

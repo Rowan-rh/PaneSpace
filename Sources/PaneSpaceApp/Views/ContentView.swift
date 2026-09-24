@@ -130,6 +130,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $appModel.isShowingSettings) {
             SettingsView()
+                .environmentObject(appModel)
                 .frame(width: 860, height: 620)
         }
         .onAppear {

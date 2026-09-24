@@ -2,7 +2,6 @@ import Foundation
 
 struct SidebarLocationSnapshot: Sendable {
     let favorites: [SidebarLocation]
-    let workspaces: [SidebarLocation]
     let volumes: [SidebarLocation]
 }
 
@@ -47,30 +46,6 @@ actor LocalSidebarLocationProvider: SidebarLocationProviding {
             )
         ]
 
-        let workspaceCandidates = [
-            SidebarLocation(
-                id: "workspace:home",
-                title: "Home Workspace",
-                systemImage: "square.grid.2x2",
-                url: home
-            ),
-            SidebarLocation(
-                id: "workspace:code",
-                title: "Development",
-                systemImage: "hammer",
-                url: home.appendingPathComponent("Code", isDirectory: true)
-            ),
-            SidebarLocation(
-                id: "workspace:downloads",
-                title: "Downloads Review",
-                systemImage: "tray.full",
-                url: home.appendingPathComponent("Downloads", isDirectory: true)
-            )
-        ]
-        let workspaces = workspaceCandidates.filter {
-            fileManager.fileExists(atPath: $0.url.path)
-        }
-
         let volumeKeys: Set<URLResourceKey> = [.volumeNameKey]
         let volumeURLs = fileManager.mountedVolumeURLs(
             includingResourceValuesForKeys: Array(volumeKeys),
@@ -88,7 +63,6 @@ actor LocalSidebarLocationProvider: SidebarLocationProviding {
 
         return SidebarLocationSnapshot(
             favorites: favorites,
-            workspaces: workspaces,
             volumes: volumes
         )
     }
