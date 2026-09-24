@@ -5,6 +5,7 @@ import Foundation
 actor StaticDirectoryProvider: FileProviding {
     private var contentsByDirectory: [URL: [FileItem]]
     private(set) var trashedURLs: [URL] = []
+    private var loadDelay: Duration = .zero
 
     init(_ contentsByDirectory: [URL: [FileItem]]) {
         self.contentsByDirectory = Dictionary(
@@ -16,7 +17,14 @@ actor StaticDirectoryProvider: FileProviding {
         contentsByDirectory[directory.standardizedFileURL] = items
     }
 
-    func contents(of directory: URL, showsHiddenFiles: Bool) throws -> [FileItem] {
+    func setLoadDelay(_ delay: Duration) {
+        loadDelay = delay
+    }
+
+    func contents(of directory: URL, showsHiddenFiles: Bool) async throws -> [FileItem] {
+        if loadDelay > .zero {
+            try await Task.sleep(for: loadDelay)
+        }
         guard let items = contentsByDirectory[directory.standardizedFileURL] else {
             throw FileProviderError.itemUnavailable
         }

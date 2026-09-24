@@ -7,15 +7,25 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     @Published var tabs: [BrowserTab]
     @Published var activeTabID: BrowserTab.ID
-    @Published var items: [FileItem] = []
+    @Published var items: [FileItem] = [] {
+        didSet { itemsRevision = UUID() }
+    }
     @Published var selection: Set<FileItem.ID> = []
-    @Published var searchText = ""
-    @Published var sort: FileSort = .name
-    @Published var sortAscending = true
+    @Published var searchText = "" {
+        didSet { displayCache.removeAll() }
+    }
+    @Published var sort: FileSort = .name {
+        didSet { displayCache.removeAll() }
+    }
+    @Published var sortAscending = true {
+        didSet { displayCache.removeAll() }
+    }
     @Published var showsHiddenFiles = false
     @Published var viewMode: BrowserViewMode
     @Published var columns: [BrowserColumn] = []
     @Published var isLoading = false
+    /// Shown only when a navigation load is slow, so quick loads and refreshes never flash.
+    @Published private(set) var showsLoadingIndicator = false
     @Published var errorMessage: String?
     @Published var operationErrorMessage: String?
     @Published var isPerformingOperation = false
@@ -33,6 +43,17 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var observesDirectories = false
     private var hasPendingDirectoryLoad = false
     private var selectionURLToRestoreAfterRefresh: URL?
+    private var itemsRevision = UUID()
+    private var displayCache: [DisplayCacheKey: [FileItem]] = [:]
+    private var loadingIndicatorTask: Task<Void, Never>?
+    private var displayedDirectory: URL?
+
+    private struct DisplayCacheKey: Hashable {
+        let revision: UUID
+        let searchText: String
+        let sort: FileSort
+        let sortAscending: Bool
+    }
 
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -87,7 +108,31 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     var canGoForward: Bool { !activeTab.forwardHistory.isEmpty }
 
     var visibleItems: [FileItem] {
-        displayedItems(from: items)
+        cachedDisplayedItems(revision: itemsRevision, source: items)
+    }
+
+    func displayedItems(in column: BrowserColumn) -> [FileItem] {
+        cachedDisplayedItems(revision: column.itemsRevision, source: column.items)
+    }
+
+    // Sorting large folders with localized comparison is expensive, and views read the display
+    // order on every render, so results are reused until the contents, search, or sort change.
+    private func cachedDisplayedItems(revision: UUID, source: [FileItem]) -> [FileItem] {
+        let key = DisplayCacheKey(
+            revision: revision,
+            searchText: searchText,
+            sort: sort,
+            sortAscending: sortAscending
+        )
+        if let cached = displayCache[key] {
+            return cached
+        }
+        let displayed = displayedItems(from: source)
+        if displayCache.count >= 64 {
+            displayCache.removeAll()
+        }
+        displayCache[key] = displayed
+        return displayed
     }
 
     /// The selected items that are currently visible, in display order. Items hidden by the
@@ -99,7 +144,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func items(for ids: Set<FileItem.ID>) -> [FileItem] {
         guard !ids.isEmpty else { return [] }
         let displayed = viewMode == .columns
-            ? columns.flatMap { displayedItems(from: $0.items) }
+            ? columns.flatMap { displayedItems(in: $0) }
             : visibleItems
         var includedIDs: Set<FileItem.ID> = []
         return displayed.filter { ids.contains($0.id) && includedIDs.insert($0.id).inserted }
@@ -162,6 +207,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             updateActiveTabURL(directory)
             items = columns[index].items
             isLoading = false
+            hideLoadingIndicator()
             errorMessage = columns[index].errorMessage
             syncDirectoryObservers()
             return
@@ -326,7 +372,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         guard offset == -1 || offset == 1,
               let columnIndex = columns.firstIndex(where: { $0.id == columnID }) else { return false }
         let column = columns[columnIndex]
-        let visibleItems = displayedItems(from: column.items)
+        let visibleItems = displayedItems(in: column)
         guard !column.isLoading, !visibleItems.isEmpty else { return false }
 
         let selectedIndex = visibleItems.firstIndex { $0.id == column.selectedItemID }
@@ -345,7 +391,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func enterSelectedColumnFolderFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
         guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
               let selectedID = columns[columnIndex].selectedItemID,
-              let folder = displayedItems(from: columns[columnIndex].items)
+              let folder = displayedItems(in: columns[columnIndex])
                 .first(where: { $0.id == selectedID && $0.isFolder }) else { return nil }
 
         let childDirectory = folder.url.standardizedFileURL
@@ -353,7 +399,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             $0.directory.standardizedFileURL == childDirectory
         }) {
             if !childColumn.isLoading,
-               let firstItem = displayedItems(from: childColumn.items).first {
+               let firstItem = displayedItems(in: childColumn).first {
                 selectColumnItem(firstItem, in: childColumn.id)
             }
             return childColumn.id
@@ -442,6 +488,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         columnLoadTask?.cancel()
         isLoading = true
         hasPendingDirectoryLoad = true
+        scheduleLoadingIndicator(unlessShowing: directory)
         refreshTask = Task {
             do {
                 let refreshedItems = try await provider.contents(
@@ -475,6 +522,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 }
                 isLoading = false
                 hasPendingDirectoryLoad = false
+                displayedDirectory = directory.standardizedFileURL
+                hideLoadingIndicator()
                 errorMessage = nil
                 syncDirectoryObservers()
                 await updateAvailableCapacity(for: directory)
@@ -496,10 +545,31 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selectionURLToRestoreAfterRefresh = nil
                 isLoading = false
                 hasPendingDirectoryLoad = false
+                displayedDirectory = directory.standardizedFileURL
+                hideLoadingIndicator()
                 errorMessage = error.localizedDescription
                 availableCapacity = nil
                 syncDirectoryObservers()
             }
+        }
+    }
+
+    private func scheduleLoadingIndicator(unlessShowing directory: URL) {
+        loadingIndicatorTask?.cancel()
+        // Reloading the folder already on screen keeps its contents visible instead.
+        guard displayedDirectory != directory.standardizedFileURL else { return }
+        loadingIndicatorTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self, self.isLoading else { return }
+            self.showsLoadingIndicator = true
+        }
+    }
+
+    private func hideLoadingIndicator() {
+        loadingIndicatorTask?.cancel()
+        loadingIndicatorTask = nil
+        if showsLoadingIndicator {
+            showsLoadingIndicator = false
         }
     }
 
@@ -721,11 +791,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         } else {
             sort = newSort
             sortAscending = true
-        }
-        columns = columns.map { column in
-            var updatedColumn = column
-            updatedColumn.items = sortedItems(column.items)
-            return updatedColumn
         }
     }
 
