@@ -26,6 +26,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var isLoading = false
     /// Shown only when a navigation load is slow, so quick loads and refreshes never flash.
     @Published private(set) var showsLoadingIndicator = false
+    /// True while a folder's first batches are shown but the rest is still being read.
+    @Published private(set) var isLoadingMoreItems = false
     @Published var errorMessage: String?
     @Published var operationErrorMessage: String?
     @Published var isPerformingOperation = false
@@ -157,32 +159,54 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func displayedItems(from source: [FileItem]) -> [FileItem] {
+        Self.displayedItems(from: source, searchText: searchText, sort: sort, ascending: sortAscending)
+    }
+
+    nonisolated static func displayedItems(
+        from source: [FileItem],
+        searchText: String,
+        sort: FileSort,
+        ascending: Bool
+    ) -> [FileItem] {
         let filtered = searchText.isEmpty
             ? source
             : source.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-
-        return sortedItems(filtered)
+        return FileItemSorter.sorted(filtered, by: sort, ascending: ascending)
     }
 
-    private func sortedItems(_ source: [FileItem]) -> [FileItem] {
-        source.sorted { lhs, rhs in
-            if lhs.isFolder != rhs.isFolder {
-                return lhs.isFolder
-            }
+    /// Sorts off the main actor and stores the result where the views will look for it, so a
+    /// large folder is never sorted while the user waits on the main thread.
+    private func prepareDisplay(of source: [FileItem]) async -> DisplayPreparation {
+        let searchText = searchText
+        let sort = sort
+        let ascending = sortAscending
+        let displayed = await Task.detached(priority: .userInitiated) {
+            Self.displayedItems(from: source, searchText: searchText, sort: sort, ascending: ascending)
+        }.value
+        return DisplayPreparation(searchText: searchText, sort: sort, ascending: ascending, displayed: displayed)
+    }
 
-            let result: ComparisonResult
-            switch sort {
-            case .name:
-                result = lhs.name.localizedStandardCompare(rhs.name)
-            case .date:
-                result = compare(lhs.modificationDate, rhs.modificationDate)
-            case .size:
-                result = compare(lhs.fileSize, rhs.fileSize)
-            case .kind:
-                result = lhs.kind.localizedStandardCompare(rhs.kind)
-            }
-            return sortAscending ? result == .orderedAscending : result == .orderedDescending
+    private struct DisplayPreparation {
+        let searchText: String
+        let sort: FileSort
+        let ascending: Bool
+        let displayed: [FileItem]
+    }
+
+    /// Seeds the display cache for a revision if the view settings did not change meanwhile.
+    private func adopt(_ preparation: DisplayPreparation, forRevision revision: UUID) {
+        guard preparation.searchText == searchText,
+              preparation.sort == sort,
+              preparation.ascending == sortAscending else { return }
+        if displayCache.count >= 64 {
+            displayCache.removeAll()
         }
+        displayCache[DisplayCacheKey(
+            revision: revision,
+            searchText: searchText,
+            sort: sort,
+            sortAscending: sortAscending
+        )] = preparation.displayed
     }
 
     func setViewMode(_ mode: BrowserViewMode) {
@@ -602,21 +626,36 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let selectionURLToRestore = selectionURLToRestoreAfterRefresh
         let showsHiddenFiles = showsHiddenFiles
         let provider = provider
+        // Reloading the folder on screen waits for the complete listing so rows do not vanish
+        // and reappear; a newly opened folder shows its first batch as soon as it is read.
+        let showsPartialResults = displayedDirectory != directory.standardizedFileURL
 
         refreshTask?.cancel()
         columnLoadTask?.cancel()
         isLoading = true
+        isLoadingMoreItems = false
         hasPendingDirectoryLoad = true
         scheduleLoadingIndicator(unlessShowing: directory)
         refreshTask = Task {
             do {
-                let refreshedItems = try await provider.contents(
-                    of: directory,
-                    showsHiddenFiles: showsHiddenFiles
-                )
-
+                var loaded: [FileItem] = []
+                var lastPublished: ContinuousClock.Instant?
+                for try await batch in provider.contentBatches(of: directory, showsHiddenFiles: showsHiddenFiles) {
+                    guard !Task.isCancelled, currentURL == directory else { return }
+                    loaded.append(contentsOf: batch)
+                    guard showsPartialResults,
+                          lastPublished.map({ ContinuousClock.now - $0 > .milliseconds(250) }) ?? true else { continue }
+                    let preparation = await prepareDisplay(of: loaded)
+                    guard !Task.isCancelled, currentURL == directory else { return }
+                    publishPartialContents(loaded, of: directory, preparation: preparation)
+                    lastPublished = .now
+                }
                 guard !Task.isCancelled, currentURL == directory else { return }
+                let preparation = await prepareDisplay(of: loaded)
+                guard !Task.isCancelled, currentURL == directory else { return }
+                let refreshedItems = loaded
                 items = refreshedItems
+                adopt(preparation, forRevision: itemsRevision)
                 let restoredItem = selectionURLToRestore.flatMap { selectionURL in
                     refreshedItems.first {
                         $0.url.standardizedFileURL == selectionURL
@@ -631,6 +670,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                         errorMessage: nil
                     )
                 ]
+                adopt(preparation, forRevision: columns[0].itemsRevision)
                 if let selectionURLToRestore {
                     selection = restoredItem.map { [$0.id] } ?? []
                     if selectionURLToRestoreAfterRefresh == selectionURLToRestore {
@@ -640,6 +680,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     selection = Self.retainedSelection(selection, in: refreshedItems)
                 }
                 isLoading = false
+                isLoadingMoreItems = false
                 hasPendingDirectoryLoad = false
                 displayedDirectory = directory.standardizedFileURL
                 hideLoadingIndicator()
@@ -663,6 +704,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selection = []
                 selectionURLToRestoreAfterRefresh = nil
                 isLoading = false
+                isLoadingMoreItems = false
                 hasPendingDirectoryLoad = false
                 displayedDirectory = directory.standardizedFileURL
                 hideLoadingIndicator()
@@ -671,6 +713,19 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 syncDirectoryObservers()
             }
         }
+    }
+
+    /// Shows what has been read so far while `isLoading` stays true until the listing ends.
+    private func publishPartialContents(_ loaded: [FileItem], of directory: URL, preparation: DisplayPreparation) {
+        items = loaded
+        adopt(preparation, forRevision: itemsRevision)
+        columns = [
+            BrowserColumn(directory: directory, items: loaded, selectedItemID: nil, isLoading: false, errorMessage: nil)
+        ]
+        adopt(preparation, forRevision: columns[0].itemsRevision)
+        errorMessage = nil
+        hideLoadingIndicator()
+        isLoadingMoreItems = true
     }
 
     private func scheduleLoadingIndicator(unlessShowing directory: URL) {
@@ -1009,20 +1064,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         } else {
             sort = newSort
             sortAscending = true
-        }
-    }
-
-    private func compare<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {
-        switch (lhs, rhs) {
-        case let (lhs?, rhs?):
-            if lhs == rhs { return .orderedSame }
-            return lhs < rhs ? .orderedAscending : .orderedDescending
-        case (nil, nil):
-            return .orderedSame
-        case (nil, _?):
-            return .orderedDescending
-        case (_?, nil):
-            return .orderedAscending
         }
     }
 

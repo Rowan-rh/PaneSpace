@@ -2,6 +2,7 @@ import Foundation
 
 protocol FileProviding: Sendable {
     func contents(of directory: URL, showsHiddenFiles: Bool) async throws -> [FileItem]
+    func contentBatches(of directory: URL, showsHiddenFiles: Bool) -> AsyncThrowingStream<[FileItem], Error>
     func createFolder(named name: String, in directory: URL) async throws -> URL
     func rename(_ item: URL, to newName: String) async throws -> URL
     /// Returns where the item ended up in the Trash when the provider knows it.
@@ -14,6 +15,22 @@ extension FileProviding {
     func availableCapacity(for directory: URL) async -> Int64? {
         nil
     }
+
+    /// Providers that can list a folder incrementally override this; the default delivers the
+    /// whole listing as one batch.
+    func contentBatches(of directory: URL, showsHiddenFiles: Bool) -> AsyncThrowingStream<[FileItem], Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    continuation.yield(try await contents(of: directory, showsHiddenFiles: showsHiddenFiles))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 actor LocalFileProvider: FileProviding {
@@ -24,37 +41,130 @@ actor LocalFileProvider: FileProviding {
     }
 
     func contents(of directory: URL, showsHiddenFiles: Bool) throws -> [FileItem] {
-        let keys: Set<URLResourceKey> = [
-            .isDirectoryKey,
-            .isPackageKey,
-            .isHiddenKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .localizedTypeDescriptionKey
-        ]
-
         let options: FileManager.DirectoryEnumerationOptions = showsHiddenFiles ? [] : [.skipsHiddenFiles]
         do {
             let urls = try fileManager.contentsOfDirectory(
                 at: directory,
-                includingPropertiesForKeys: Array(keys),
+                includingPropertiesForKeys: Array(Self.itemKeys),
                 options: options
             )
-            return try urls.map { url in
-                let values = try url.resourceValues(forKeys: keys)
-                return FileItem(
-                    url: url,
-                    isDirectory: values.isDirectory ?? false,
-                    isHidden: values.isHidden ?? false,
-                    fileSize: values.fileSize.map(Int64.init),
-                    modificationDate: values.contentModificationDate,
-                    kind: values.localizedTypeDescription ?? L10n.text("Item"),
-                    isPackage: values.isPackage ?? false
-                )
-            }
+            return try urls.map(item(for:))
         } catch {
             throw FileProviderError.normalizing(error)
         }
+    }
+
+    static let batchSize = 1_000
+
+    /// Lists a folder in batches so large folders appear before they are fully read. Ending the
+    /// stream, for example by navigating away, stops the enumeration.
+    nonisolated func contentBatches(of directory: URL, showsHiddenFiles: Bool) -> AsyncThrowingStream<[FileItem], Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await self.enumerate(directory, showsHiddenFiles: showsHiddenFiles) { continuation.yield($0) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func enumerate(
+        _ directory: URL,
+        showsHiddenFiles: Bool,
+        yield: ([FileItem]) -> Void
+    ) throws {
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants, .skipsPackageDescendants]
+        if !showsHiddenFiles { options.insert(.skipsHiddenFiles) }
+        var failure: Error?
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(Self.itemKeys),
+            options: options,
+            errorHandler: { _, error in
+                failure = error
+                return false
+            }
+        ) else {
+            throw FileProviderError.itemUnavailable
+        }
+
+        var batch: [FileItem] = []
+        batch.reserveCapacity(Self.batchSize)
+        var yieldedAny = false
+        while let url = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
+            guard let item = try? item(for: url) else { continue }
+            batch.append(item)
+            if batch.count == Self.batchSize {
+                yield(batch)
+                yieldedAny = true
+                batch.removeAll(keepingCapacity: true)
+            }
+        }
+        if let failure {
+            throw FileProviderError.normalizing(failure)
+        }
+        if !batch.isEmpty || !yieldedAny {
+            yield(batch)
+        }
+    }
+
+    static let itemKeys: Set<URLResourceKey> = [
+        .isDirectoryKey,
+        .isPackageKey,
+        .isHiddenKey,
+        .isSymbolicLinkKey,
+        .isVolumeKey,
+        .fileSizeKey,
+        .contentModificationDateKey
+    ]
+
+    private func item(for url: URL) throws -> FileItem {
+        let values = try url.resourceValues(forKeys: Self.itemKeys)
+        return FileItem(
+            url: url,
+            isDirectory: values.isDirectory ?? false,
+            isHidden: values.isHidden ?? false,
+            fileSize: values.fileSize.map(Int64.init),
+            modificationDate: values.contentModificationDate,
+            kind: kind(for: url, values: values),
+            isPackage: values.isPackage ?? false
+        )
+    }
+
+    /// Looking up the localized kind costs far more than every other attribute together, so it
+    /// is shared by items that must have the same kind: plain folders, and files, packages, or
+    /// links with the same extension. Files without an extension are looked up one by one
+    /// because the system may identify them from their contents.
+    private var kindCache: [String: String] = [:]
+
+    private func kind(for url: URL, values: URLResourceValues) -> String {
+        let fileExtension = url.pathExtension.lowercased()
+        let cacheKey: String?
+        if values.isVolume == true {
+            cacheKey = nil
+        } else if values.isSymbolicLink == true {
+            cacheKey = "link.\(fileExtension)"
+        } else if values.isPackage == true {
+            cacheKey = "package.\(fileExtension)"
+        } else if values.isDirectory == true {
+            cacheKey = "folder"
+        } else {
+            cacheKey = fileExtension.isEmpty ? nil : "file.\(fileExtension)"
+        }
+        if let cacheKey, let cached = kindCache[cacheKey] {
+            return cached
+        }
+        let kind = (try? url.resourceValues(forKeys: [.localizedTypeDescriptionKey]))?.localizedTypeDescription
+            ?? L10n.text("Item")
+        if let cacheKey {
+            kindCache[cacheKey] = kind
+        }
+        return kind
     }
 
     func createFolder(named name: String, in directory: URL) throws -> URL {

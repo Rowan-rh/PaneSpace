@@ -21,6 +21,7 @@ FileProviding protocol
     └── WebDAVProvider     planned
 
 AppModel ─── FileTransferQueueModel ─── LocalTransferService
+AppModel ─── OperationHistoryModel ─── OperationHistoryStore / OperationUndoService
 AppModel ─── WorkspaceShortcutsModel ─── UserDefaults / LocalPathResolver
 BrowserPaneModel ─── LocalDirectoryObserver / LocalPathResolver
 ```
@@ -48,7 +49,7 @@ The Settings scene uses `AppStorage` for lightweight user preferences. Options t
 
 ## Provider contract
 
-Provider primitives are asynchronous. The local provider is actor-isolated so directory reads and file mutations do not block the main actor. Providers normalize common failures such as permission denial, missing items, invalid names, and name conflicts before errors reach pane state. Future remote providers should add cancellation and expose capabilities such as rename, trash, server-side copy, and thumbnails.
+Provider primitives are asynchronous. The local provider is actor-isolated so directory reads and file mutations do not block the main actor. Folders are listed as a stream of batches, so a pane can show the first items of a large folder before the listing ends. Panes sort and filter every listing in a detached task before showing it ([ADR 0010](docs/adr/0010-incremental-directory-listing.md)). Providers normalize common failures such as permission denial, missing items, invalid names, and name conflicts before errors reach pane state. Future remote providers should add cancellation and expose capabilities such as rename, trash, server-side copy, and thumbnails.
 
 Each provider should eventually report:
 
