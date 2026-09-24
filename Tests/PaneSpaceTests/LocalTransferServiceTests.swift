@@ -32,7 +32,7 @@ final class LocalTransferServiceTests: XCTestCase {
             kind: .copy,
             conflictDecision: nil
         )
-        let copied = try XCTUnwrap(transferred)
+        let copied = try XCTUnwrap(transferred).destination
 
         let copiedFile = copied.appendingPathComponent("note.txt")
         XCTAssertEqual(try Data(contentsOf: copiedFile), Data("hello".utf8))
@@ -92,7 +92,9 @@ final class LocalTransferServiceTests: XCTestCase {
         try Data("new".utf8).write(to: source)
         try Data("old".utf8).write(to: existing)
         let service = LocalTransferService(trashItem: { url in
-            try FileManager.default.moveItem(at: url, to: testTrash.appendingPathComponent(url.lastPathComponent))
+            let trashed = testTrash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
         })
 
         _ = try await service.transfer(source: source, to: destinationDirectory, kind: .copy, conflictDecision: .replace)

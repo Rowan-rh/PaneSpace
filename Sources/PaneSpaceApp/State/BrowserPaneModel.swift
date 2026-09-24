@@ -35,6 +35,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published private(set) var locationErrorMessage: String?
     @Published private(set) var isResolvingLocation = false
 
+    /// Receives finished file operations for the history.
+    var didRecordOperation: @MainActor (OperationRecord) -> Void = { _ in }
+
     private let provider: FileProviding
     private var refreshTask: Task<Void, Never>?
     private var columnLoadTask: Task<Void, Never>?
@@ -818,6 +821,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             do {
                 let folder = try await provider.createFolder(named: name, in: directory)
                 guard !Task.isCancelled else { return }
+                didRecordOperation(OperationRecord(
+                    kind: .newFolder,
+                    outcome: .completed,
+                    directory: directory,
+                    items: [OperationRecordItem(original: folder, result: folder)],
+                    requestedCount: 1
+                ))
                 finishOperation()
                 refresh()
                 selection = [folder]
@@ -837,6 +847,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             do {
                 let destination = try await provider.rename(item.url, to: newName)
                 guard !Task.isCancelled else { return }
+                if destination != item.url {
+                    didRecordOperation(OperationRecord(
+                        kind: .rename,
+                        outcome: .completed,
+                        directory: item.url.deletingLastPathComponent(),
+                        items: [OperationRecordItem(original: item.url, result: destination)],
+                        requestedCount: 1
+                    ))
+                }
                 finishOperation()
                 remapTabs(from: item.url, to: destination)
                 loadCurrentDirectory()
@@ -872,10 +891,20 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func applyBatchRename(_ plan: BatchRenamePlan) {
         guard !isPerformingOperation, plan.canApply else { return }
         let renamer = BatchRenamer(provider: provider)
+        let directory = plan.entries.first?.source.deletingLastPathComponent() ?? currentURL
         beginOperation()
         operationTask = Task {
             do {
                 let renamed = try await renamer.apply(plan)
+                didRecordOperation(OperationRecord(
+                    kind: .rename,
+                    outcome: .completed,
+                    directory: directory,
+                    items: plan.changedEntries.compactMap { entry in
+                        renamed[entry.source].map { OperationRecordItem(original: entry.source, result: $0) }
+                    },
+                    requestedCount: plan.changedEntries.count
+                ))
                 finishOperation()
                 for (source, destination) in renamed {
                     remapTabs(from: source, to: destination)
@@ -883,6 +912,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 refresh()
                 selection = Set(renamed.values)
             } catch {
+                didRecordOperation(OperationRecord(
+                    kind: .rename,
+                    outcome: .failed,
+                    directory: directory,
+                    items: [],
+                    requestedCount: plan.changedEntries.count,
+                    errorMessage: error.localizedDescription
+                ))
                 finishOperation(error: error)
                 refresh()
             }
@@ -907,13 +944,25 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         beginOperation()
         operationTask = Task {
             var failures: [Error] = []
+            var trashed: [OperationRecordItem] = []
             for item in items {
                 guard !Task.isCancelled else { break }
                 do {
-                    try await provider.moveToTrash(item.url)
+                    let location = try await provider.moveToTrash(item.url)
+                    trashed.append(OperationRecordItem(original: item.url, trashed: location))
                 } catch {
                     failures.append(error)
                 }
+            }
+            if !trashed.isEmpty || !failures.isEmpty {
+                didRecordOperation(OperationRecord(
+                    kind: .trash,
+                    outcome: failures.isEmpty ? .completed : .failed,
+                    directory: items[0].url.deletingLastPathComponent(),
+                    items: trashed,
+                    requestedCount: items.count,
+                    errorMessage: failures.first?.localizedDescription
+                ))
             }
             guard !Task.isCancelled else {
                 finishOperation()

@@ -163,7 +163,7 @@ private struct FailingRenameProvider: FileProviding {
         return try await local.rename(item, to: newName)
     }
 
-    func moveToTrash(_ item: URL) async throws {
+    func moveToTrash(_ item: URL) async throws -> URL? {
         throw FileProviderError.operationFailed
     }
 }

@@ -480,7 +480,7 @@ private actor ColumnNavigationProvider: FileProviding {
         item.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: true)
     }
 
-    func moveToTrash(_ item: URL) throws {
+    func moveToTrash(_ item: URL) throws -> URL? {
         throw FileProviderError.operationFailed
     }
 }
@@ -519,7 +519,7 @@ private actor DelayedColumnProvider: FileProviding {
         throw FileProviderError.operationFailed
     }
 
-    func moveToTrash(_ item: URL) throws {
+    func moveToTrash(_ item: URL) throws -> URL? {
         throw FileProviderError.operationFailed
     }
 }
@@ -545,11 +545,12 @@ private actor PartialTrashFailureProvider: FileProviding {
         throw FileProviderError.operationFailed
     }
 
-    func moveToTrash(_ item: URL) throws {
+    func moveToTrash(_ item: URL) throws -> URL? {
         if item == failingURL {
             throw FileProviderError.permissionDenied
         }
         items.removeAll { $0.url == item }
+        return nil
     }
 }
 
@@ -572,7 +573,7 @@ private actor RenameFailureProvider: FileProviding {
         throw FileProviderError.permissionDenied
     }
 
-    func moveToTrash(_ item: URL) throws {
+    func moveToTrash(_ item: URL) throws -> URL? {
         throw FileProviderError.operationFailed
     }
 }
