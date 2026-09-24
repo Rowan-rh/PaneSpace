@@ -153,6 +153,26 @@ final class AppModel: ObservableObject {
         activePaneModel.navigate(to: url)
     }
 
+    /// Opens a sidebar location in the active pane unless the pane already shows it.
+    func openSidebarLocation(_ location: SidebarLocation) {
+        guard activePaneModel.currentURL.standardizedFileURL != location.url.standardizedFileURL else { return }
+        open(location.url)
+    }
+
+    /// Keeps the sidebar highlight on the location the active pane shows. Clearing it after the
+    /// pane moves elsewhere lets a second click on the same location open it again.
+    func syncSidebarSelection(with locations: [SidebarLocation]) {
+        let currentDirectory = activePaneModel.currentURL.standardizedFileURL
+        if let selectedID = sidebarSelection,
+           locations.contains(where: { $0.id == selectedID && $0.url.standardizedFileURL == currentDirectory }) {
+            return
+        }
+        let matchingID = locations.first { $0.url.standardizedFileURL == currentDirectory }?.id
+        if sidebarSelection != matchingID {
+            sidebarSelection = matchingID
+        }
+    }
+
     func requestNewFolder() {
         isCreatingFolder = true
     }

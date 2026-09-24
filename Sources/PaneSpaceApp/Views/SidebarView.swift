@@ -83,6 +83,22 @@ struct SidebarView: View {
             .frame(height: 34)
         }
         .navigationTitle("PaneSpace")
+        // Rows are plain selectable labels: a button inside a selectable list row only reacts
+        // to clicks on its text, so clicks elsewhere in the row selected it without navigating.
+        .onChange(of: appModel.sidebarSelection) { _, selectedID in
+            guard let selectedID,
+                  let location = navigableLocations.first(where: { $0.id == selectedID }) else { return }
+            appModel.openSidebarLocation(location)
+        }
+        .onChange(of: appModel.activePaneModel.currentURL) {
+            appModel.syncSidebarSelection(with: navigableLocations)
+        }
+        .onChange(of: appModel.activePane) {
+            appModel.syncSidebarSelection(with: navigableLocations)
+        }
+        .onChange(of: navigableLocations) {
+            appModel.syncSidebarSelection(with: navigableLocations)
+        }
         .task {
             model.refresh()
         }
@@ -93,17 +109,15 @@ struct SidebarView: View {
         }
     }
 
+    private var navigableLocations: [SidebarLocation] {
+        model.favorites
+            + (showWorkspaceGroup ? model.workspaces : [])
+            + (showVolumesGroup ? model.volumes : [])
+    }
+
     private func locationRow(_ location: SidebarLocation) -> some View {
-        Button {
-            appModel.sidebarSelection = location.id
-            appModel.open(location.url)
-        } label: {
-            Label(L10n.text(location.title), systemImage: location.systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
+        Label(L10n.text(location.title), systemImage: location.systemImage)
             .tag(location.id)
-            .contentShape(Rectangle())
     }
 
     private func tagRow(_ title: String, color: Color) -> some View {
