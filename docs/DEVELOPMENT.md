@@ -16,7 +16,10 @@ swift run PaneSpace
 make app
 open dist/PaneSpace.app
 codesign --verify --deep --strict dist/PaneSpace.app
+make install
 ```
+
+`make install` 会先执行 `make app`，再用新构建替换“应用程序”文件夹中的 `PaneSpace.app`，并校验签名。若已安装的 PaneSpace 正在运行，命令会停止并提示先退出。需要安装到其他位置时可以指定目录，例如 `make install INSTALL_DIR=~/Applications`。安装版与 `dist/` 中的开发版共用同一个应用标识，因此偏好设置和会话也是共用的。
 
 `make app` 会生成使用 ad-hoc 签名的开发版应用包。构建脚本会在 Info.plist 中写入受保护目录和外部卷的本地化用途说明，便于 macOS 显示系统授权提示。公开发行版本后续使用 Developer ID 签名、公证和发布自动化。
 
