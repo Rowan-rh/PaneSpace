@@ -1225,6 +1225,13 @@ private struct StatusBarView: View {
                 Text(L10n.format("%lld selected", Int64(selectedCount)))
             }
 
+            if model.isLoadingMoreItems {
+                Text("•")
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Loading…")
+            }
+
             if let freeSpace = model.availableCapacity {
                 Text("•")
                 Text(L10n.format("%@ available", ByteCountFormatter.string(fromByteCount: freeSpace, countStyle: .file)))

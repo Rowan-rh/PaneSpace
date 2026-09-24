@@ -3,6 +3,9 @@ import Foundation
 
 struct FileItem: Identifiable, Hashable, Sendable {
     let url: URL
+    /// Stored because sorting large folders compares names hundreds of thousands of times, and
+    /// deriving `lastPathComponent` from the URL each time dominated the sort.
+    let name: String
     let isDirectory: Bool
     let isHidden: Bool
     let fileSize: Int64?
@@ -20,6 +23,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
         isPackage: Bool = false
     ) {
         self.url = url
+        self.name = url.lastPathComponent
         self.isDirectory = isDirectory
         self.isHidden = isHidden
         self.fileSize = fileSize
@@ -29,7 +33,6 @@ struct FileItem: Identifiable, Hashable, Sendable {
     }
 
     var id: URL { url }
-    var name: String { url.lastPathComponent }
 
     /// Packages such as applications are directories on disk but behave as single files when browsing.
     var isFolder: Bool { isDirectory && !isPackage }

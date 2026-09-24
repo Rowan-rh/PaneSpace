@@ -28,7 +28,7 @@ For a detailed inventory of unfinished and partially implemented features, inclu
 - [x] Byte progress and cancellation of large items
 - [x] Persistent operation history
 - [x] Undo support where platform behavior permits
-- [ ] Large-directory loading without blocking the UI
+- [x] Large-directory loading without blocking the UI
 - [x] File-system observation and live refresh
 
 ## 0.3 — Views and workflows

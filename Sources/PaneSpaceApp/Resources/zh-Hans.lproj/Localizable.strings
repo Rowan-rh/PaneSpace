@@ -378,3 +378,4 @@
 "“%@” was moved or deleted after the operation, so it cannot be undone." = "“%@”在操作后已被移动或删除，无法撤销。";
 "“%@” is not empty anymore, so it was not moved to the Trash." = "“%@”已不再为空，因此未移到废纸篓。";
 "%lld items were restored and %lld could not be: %@" = "已恢复 %lld 个项目，%lld 个无法恢复：%@";
+"Loading…" = "正在载入…";
