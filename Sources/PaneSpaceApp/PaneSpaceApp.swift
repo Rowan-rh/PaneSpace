@@ -38,6 +38,14 @@ struct PaneSpaceApp: App {
                 }
                 .disabled(appModel.activePaneModel.isPerformingOperation)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+
+                Button("Rename…") {
+                    appModel.activePaneModel.requestRename(appModel.activePaneModel.selectedItems)
+                }
+                .disabled(
+                    appModel.activePaneModel.selectedItems.isEmpty ||
+                        appModel.activePaneModel.isPerformingOperation
+                )
             }
 
             CommandGroup(replacing: .saveItem) {

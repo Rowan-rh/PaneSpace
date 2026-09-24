@@ -31,6 +31,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var isPerformingOperation = false
     @Published var availableCapacity: Int64?
     @Published var renameTarget: FileItem?
+    @Published var batchRenameRequest: BatchRenameRequest?
     @Published private(set) var locationErrorMessage: String?
     @Published private(set) var isResolvingLocation = false
 
@@ -633,7 +634,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                         selectionURLToRestoreAfterRefresh = nil
                     }
                 } else {
-                    selection = selection.intersection(Set(refreshedItems.map(\.id)))
+                    selection = Self.retainedSelection(selection, in: refreshedItems)
                 }
                 isLoading = false
                 hasPendingDirectoryLoad = false
@@ -759,9 +760,16 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
         items = currentColumn.items
         errorMessage = currentColumn.errorMessage
-        let availableIDs = Set(refreshedColumns.flatMap(\.items).map(\.id))
-        selection.formIntersection(availableIDs)
+        selection = Self.retainedSelection(selection, in: refreshedColumns.flatMap(\.items))
         syncDirectoryObservers()
+    }
+
+    /// Keeps selected items that still exist. Matching uses the standardized path because URLs
+    /// returned by rename and by directory listing can differ in a folder's trailing slash.
+    private static func retainedSelection(_ selection: Set<FileItem.ID>, in items: [FileItem]) -> Set<FileItem.ID> {
+        guard !selection.isEmpty else { return [] }
+        let selectedPaths = Set(selection.map(\.standardizedFileURL.path))
+        return Set(items.lazy.filter { selectedPaths.contains($0.url.standardizedFileURL.path) }.map(\.id))
     }
 
     private func updateAvailableCapacity(for directory: URL) async {
@@ -841,6 +849,52 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 finishOperation(error: error)
             }
         }
+    }
+
+    /// Starts renaming: one item uses the simple name sheet, several use batch rename.
+    func requestRename(_ targets: [FileItem]) {
+        guard !isPerformingOperation, let first = targets.first else { return }
+        if targets.count == 1 {
+            renameTarget = first
+        } else {
+            batchRenameRequest = BatchRenameRequest(targets: targets)
+        }
+    }
+
+    func batchRenamePlan(for targets: [FileItem], rule: BatchRenameRule) -> BatchRenamePlan {
+        BatchRenamePlan(
+            sources: targets.map(\.url),
+            rule: rule,
+            existingNames: siblingNames(of: targets)
+        )
+    }
+
+    func applyBatchRename(_ plan: BatchRenamePlan) {
+        guard !isPerformingOperation, plan.canApply else { return }
+        let renamer = BatchRenamer(provider: provider)
+        beginOperation()
+        operationTask = Task {
+            do {
+                let renamed = try await renamer.apply(plan)
+                finishOperation()
+                for (source, destination) in renamed {
+                    remapTabs(from: source, to: destination)
+                }
+                refresh()
+                selection = Set(renamed.values)
+            } catch {
+                finishOperation(error: error)
+                refresh()
+            }
+        }
+    }
+
+    /// Names in the folder that holds the targets, taken from whatever this pane has loaded.
+    private func siblingNames(of targets: [FileItem]) -> [String] {
+        guard let directory = targets.first?.url.deletingLastPathComponent().standardizedFileURL else { return [] }
+        let loaded = columns.first { $0.directory.standardizedFileURL == directory }?.items
+            ?? (currentURL.standardizedFileURL == directory ? items : [])
+        return loaded.map(\.name)
     }
 
     func trashSelection() {

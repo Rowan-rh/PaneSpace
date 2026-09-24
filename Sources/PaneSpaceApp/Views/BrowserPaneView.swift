@@ -108,6 +108,9 @@ struct BrowserPaneView: View {
         } message: { targets in
             Text(trashConfirmationMessage(for: targets))
         }
+        .sheet(item: $model.batchRenameRequest) { request in
+            BatchRenameView(model: model, request: request)
+        }
         .sheet(item: $model.renameTarget) { item in
             VStack(alignment: .leading, spacing: 16) {
                 Text("Rename \(item.name)")
@@ -1104,8 +1107,10 @@ private struct FileItemActionsMenu: View {
         Button("Show in Finder") { model.reveal(targets) }
         Divider()
         TransferActionsMenu(slot: slot, urls: targets.map(\.url))
-        Button("Rename…") { model.renameTarget = targets.first }
-            .disabled(targets.count != 1 || model.isPerformingOperation)
+        Button(targets.count > 1 ? L10n.format("Rename %lld Items…", Int64(targets.count)) : L10n.text("Rename…")) {
+            model.requestRename(targets)
+        }
+        .disabled(targets.isEmpty || model.isPerformingOperation)
         Button("Move to Trash", role: .destructive) { requestTrash(targets) }
             .disabled(model.isPerformingOperation)
     }
