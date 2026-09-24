@@ -893,6 +893,9 @@ private struct FileListView: View {
                         }
                         .disabled(model.isPerformingOperation)
                     }
+                    .simultaneousGesture(TapGesture().onEnded {
+                        isFocused = true
+                    })
             }
         }
         .listStyle(.inset)
