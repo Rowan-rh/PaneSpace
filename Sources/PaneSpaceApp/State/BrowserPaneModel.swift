@@ -47,6 +47,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var displayCache: [DisplayCacheKey: [FileItem]] = [:]
     private var loadingIndicatorTask: Task<Void, Never>?
     private var displayedDirectory: URL?
+    /// Anchor and cursor for Shift ranges and keyboard extension; `selection` stays the source of truth.
+    private var selectionState = ItemSelection<FileItem.ID>()
 
     private struct DisplayCacheKey: Hashable {
         let revision: UUID
@@ -201,6 +203,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             columns.removeSubrange((index + 1)...)
         }
         selection = [item.id]
+        selectionState.select(item.id)
 
         guard item.isFolder else {
             let directory = columns[index].directory.standardizedFileURL
@@ -389,7 +392,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func enterSelectedColumnFolderFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
-        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+        guard selection.count <= 1,
+              let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
               let selectedID = columns[columnIndex].selectedItemID,
               let folder = displayedItems(in: columns[columnIndex])
                 .first(where: { $0.id == selectedID && $0.isFolder }) else { return nil }
@@ -436,6 +440,117 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         errorMessage = columns[columnIndex].errorMessage
         syncDirectoryObservers()
         return parentColumn.id
+    }
+
+    // MARK: Multiple selection
+
+    enum SelectionModifier {
+        case none
+        /// Command-click: add or remove one item.
+        case toggle
+        /// Shift-click: select the range from the anchor.
+        case range
+    }
+
+    /// Moves the list selection with the arrow keys. Returns the item to scroll into view.
+    @discardableResult
+    func moveListSelection(_ direction: ItemSelection<FileItem.ID>.Direction, extending: Bool) -> FileItem.ID? {
+        let order = visibleItems.map(\.id)
+        selectionState.adopt(selection)
+        let target = selectionState.move(direction, extending: extending, in: order)
+        applyListSelection()
+        return target
+    }
+
+    func selectAllVisibleItems() {
+        guard viewMode == .list else { return }
+        selectionState.adopt(selection)
+        selectionState.selectAll(in: visibleItems.map(\.id))
+        applyListSelection()
+    }
+
+    private func applyListSelection() {
+        if selection != selectionState.selected {
+            selection = selectionState.selected
+        }
+    }
+
+    /// Column-browser click. Command and Shift extend the selection within the column that holds
+    /// the current selection; anywhere else they behave like a plain click, as in Finder.
+    func clickColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID, modifier: SelectionModifier) {
+        guard modifier != .none,
+              let index = columns.firstIndex(where: { $0.id == columnID }),
+              index == selectionColumnIndex else {
+            selectColumnItem(item, in: columnID)
+            return
+        }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        selectionState.adopt(selection)
+        switch modifier {
+        case .toggle:
+            selectionState.toggle(item.id, in: order)
+        case .range:
+            selectionState.extend(to: item.id, in: order)
+        case .none:
+            break
+        }
+        applyColumnSelection(at: index)
+    }
+
+    /// Shift-arrow in the column browser. Returns false when the column cannot take the key.
+    func extendColumnSelection(_ direction: ItemSelection<FileItem.ID>.Direction, in columnID: BrowserColumn.ID) -> Bool {
+        guard let index = columns.firstIndex(where: { $0.id == columnID }), !columns[index].isLoading else { return false }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        guard !order.isEmpty else { return false }
+        selectionState.adopt(index == selectionColumnIndex ? selection : [])
+        selectionState.move(direction, extending: true, in: order)
+        applyColumnSelection(at: index)
+        return true
+    }
+
+    func selectAllItems(inColumn columnID: BrowserColumn.ID) {
+        guard let index = columns.firstIndex(where: { $0.id == columnID }), !columns[index].isLoading else { return }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        guard !order.isEmpty else { return }
+        selectionState.adopt(index == selectionColumnIndex ? selection : [])
+        selectionState.selectAll(in: order)
+        applyColumnSelection(at: index)
+    }
+
+    /// The column whose items make up `selection`: the deepest column with a selected item, or the
+    /// column holding a selection carried over from the list view.
+    private var selectionColumnIndex: Int? {
+        if let index = columns.lastIndex(where: { $0.selectedItemID != nil }) { return index }
+        guard !selection.isEmpty else { return nil }
+        return columns.firstIndex { column in column.items.contains { selection.contains($0.id) } }
+    }
+
+    private func applyColumnSelection(at index: Int) {
+        let selected = selectionState.selected
+        let column = columns[index]
+        // A single folder shows its contents again, exactly like a plain click.
+        if selected.count == 1, let only = selected.first,
+           let item = column.items.first(where: { $0.id == only }) {
+            let anchor = selectionState
+            selectColumnItem(item, in: column.id)
+            selectionState = anchor
+            return
+        }
+
+        selectionURLToRestoreAfterRefresh = nil
+        refreshTask?.cancel()
+        columnLoadTask?.cancel()
+        if columns.count > index + 1 {
+            columns.removeSubrange((index + 1)...)
+        }
+        columns[index].selectedItemID = selectionState.cursor ?? column.items.first { selected.contains($0.id) }?.id
+        selection = selected
+        updateActiveTabURL(column.directory)
+        items = columns[index].items
+        isLoading = false
+        hideLoadingIndicator()
+        errorMessage = columns[index].errorMessage
+        syncDirectoryObservers()
     }
 
     /// Where items transferred into this pane land. In the column browser this is the folder the
