@@ -75,12 +75,25 @@ final class FileTransferQueueModel: ObservableObject {
         guard let jobIndex = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         jobs[jobIndex].state = .running
 
+        do {
+            try await measure(jobIndex: jobIndex)
+        } catch {
+            jobs[jobIndex].state = .cancelled
+            return
+        }
+
         for itemIndex in jobs[jobIndex].items.indices {
             if Task.isCancelled {
                 jobs[jobIndex].state = .cancelled
                 return
             }
             if jobs[jobIndex].items[itemIndex].isComplete { continue }
+            let finishedBytes = jobs[jobIndex].items.filter(\.isComplete).reduce(Int64(0)) { $0 + ($1.byteCount ?? 0) }
+            let itemBytes = jobs[jobIndex].items[itemIndex].byteCount ?? 0
+            jobs[jobIndex].completedBytes = finishedBytes
+            let counter = TransferByteCounter()
+            let progressTask = trackProgress(of: counter, jobID: jobID, finishedBytes: finishedBytes, itemBytes: itemBytes)
+            defer { progressTask.cancel() }
 
             let source = jobs[jobIndex].items[itemIndex].source
             let directory = jobs[jobIndex].destinationDirectory
@@ -102,15 +115,18 @@ final class FileTransferQueueModel: ObservableObject {
                         source: source,
                         to: directory,
                         kind: jobs[jobIndex].kind,
-                        conflictDecision: decision
+                        conflictDecision: decision,
+                        progress: counter
                     )
                     jobs[jobIndex].items[itemIndex].destination = destination
                     if destination != nil {
                         didCompleteItem(source.deletingLastPathComponent(), directory)
                     }
                 }
+                progressTask.cancel()
                 jobs[jobIndex].items[itemIndex].isComplete = true
                 jobs[jobIndex].completedCount += 1
+                jobs[jobIndex].completedBytes = finishedBytes + itemBytes
             } catch is CancellationError {
                 jobs[jobIndex].state = .cancelled
                 return
@@ -129,6 +145,40 @@ final class FileTransferQueueModel: ObservableObject {
         }
 
         jobs[jobIndex].state = .completed
+    }
+
+    /// Sizes every item once per job so retries keep the same total.
+    private func measure(jobIndex: Int) async throws {
+        guard jobs[jobIndex].totalBytes == nil else { return }
+        var total: Int64 = 0
+        for itemIndex in jobs[jobIndex].items.indices {
+            try Task.checkCancellation()
+            let size = try await service.byteCount(of: jobs[jobIndex].items[itemIndex].source)
+            jobs[jobIndex].items[itemIndex].byteCount = size
+            total += size
+        }
+        jobs[jobIndex].totalBytes = total
+    }
+
+    /// Copies report progress from the transfer actor; the queue samples it a few times a second
+    /// instead of publishing every callback to the main actor.
+    private func trackProgress(
+        of counter: TransferByteCounter,
+        jobID: UUID,
+        finishedBytes: Int64,
+        itemBytes: Int64
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, let self,
+                      let index = self.jobs.firstIndex(where: { $0.id == jobID }) else { return }
+                let bytes = finishedBytes + min(counter.value, itemBytes)
+                if self.jobs[index].completedBytes != bytes {
+                    self.jobs[index].completedBytes = bytes
+                }
+            }
+        }
     }
 
     private func requestDecision(jobID: UUID, source: URL, destination: URL) async -> FileConflictDecision? {

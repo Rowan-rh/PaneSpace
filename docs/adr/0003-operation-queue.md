@@ -11,7 +11,7 @@ Copying and moving files can take minutes, span providers, encounter conflicts, 
 
 Introduce a serial local transfer queue whose jobs have stable identifiers and explicit states: queued, running, waiting for user decision, cancelling, completed, cancelled, and failed.
 
-Jobs report item progress, accept cancellation, and record conflicts. Views submit commands and observe job state. An actor-isolated local transfer service executes mutations. The queue owns retry and conflict policy, including an apply-to-all decision for the current job. Byte progress, pausing, persistent history, and provider-neutral execution remain future work.
+Jobs report item progress, accept cancellation, and record conflicts. Views submit commands and observe job state. An actor-isolated local transfer service executes mutations. The queue owns retry and conflict policy, including an apply-to-all decision for the current job. Byte progress was added by ADR 0007. Pausing, persistent history, and provider-neutral execution remain future work.
 
 ## Consequences
 

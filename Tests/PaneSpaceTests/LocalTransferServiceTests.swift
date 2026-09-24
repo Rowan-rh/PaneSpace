@@ -136,7 +136,7 @@ final class LocalTransferServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let source = root.appendingPathComponent("source.txt")
         try Data("source".utf8).write(to: source)
-        let service = LocalTransferService(copyItem: { _, staging in
+        let service = LocalTransferService(copyItem: { _, staging, _ in
             try Data("partial".utf8).write(to: staging)
             throw CocoaError(.fileReadCorruptFile)
         })
@@ -148,6 +148,47 @@ final class LocalTransferServiceTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), [])
         }
+    }
+
+    func testCopierCountsBytesAndMeasuresTreesWithoutFollowingLinks() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Tree", isDirectory: true)
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("Nested"), withIntermediateDirectories: true)
+        try Data(count: 300_000).write(to: source.appendingPathComponent("large.bin"))
+        try Data(count: 5).write(to: source.appendingPathComponent("Nested/small.bin"))
+        try FileManager.default.createSymbolicLink(at: source.appendingPathComponent("loop"), withDestinationURL: source)
+
+        let measured = try LocalFileCopier.byteCount(of: source)
+        XCTAssertGreaterThanOrEqual(measured, 300_005)
+        XCTAssertLessThan(measured, 300_005 + 4_096, "The looping link is counted as a link, not followed")
+
+        let counter = TransferByteCounter()
+        let copy = root.appendingPathComponent("Copy", isDirectory: true)
+        try LocalFileCopier.copy(from: source, to: copy, progress: counter)
+        XCTAssertGreaterThanOrEqual(counter.value, 300_005)
+        XCTAssertEqual(try Data(contentsOf: copy.appendingPathComponent("Nested/small.bin")).count, 5)
+    }
+
+    func testCopierStopsWhenItsTaskIsCancelled() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("large.bin")
+        try Data(count: 1_000_000).write(to: source)
+        let destination = root.appendingPathComponent("copy.bin")
+
+        let result = await Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                try LocalFileCopier.copy(from: source, to: destination, progress: nil)
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }.value
+        XCTAssertTrue(result)
     }
 
     private func makeRoot() throws -> URL {

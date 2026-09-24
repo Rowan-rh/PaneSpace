@@ -19,6 +19,16 @@ struct TransferCenterView: View {
                         Text(L10n.text(job.kind == .copy ? "Copy" : "Move"))
                         Text("\(job.completedCount)/\(job.items.count)")
                             .monospacedDigit()
+                        if job.state == .running || job.state == .cancelling {
+                            ProgressView(value: job.fractionCompleted)
+                                .frame(width: 120)
+                                .accessibilityLabel("Transfer progress")
+                        }
+                        if let bytes = job.byteSummary {
+                            Text(bytes)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
                         Text(L10n.text(job.state.title))
                             .foregroundStyle(job.state == .failed ? .red : .secondary)
                         if let error = job.errorMessage {
@@ -93,6 +103,11 @@ struct TransferCenterView: View {
                         }
                     }
                     Spacer()
+                    if let bytes = job.byteSummary {
+                        Text(bytes)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                     Text("\(job.completedCount)/\(job.items.count)")
                         .monospacedDigit()
                     Text(L10n.text(job.state.title))
@@ -107,6 +122,18 @@ struct TransferCenterView: View {
         }
         .padding(20)
         .frame(width: 620, height: 360)
+    }
+}
+
+private extension FileTransferJob {
+    /// "1.2 MB of 4 GB" while bytes are known.
+    var byteSummary: String? {
+        guard let totalBytes, totalBytes > 0 else { return nil }
+        return L10n.format(
+            "%@ of %@",
+            ByteCountFormatter.string(fromByteCount: completedBytes, countStyle: .file),
+            ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        )
     }
 }
 
