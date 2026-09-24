@@ -31,6 +31,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private let directoryObserver = LocalDirectoryObserver()
     private let pathResolver = LocalPathResolver()
     private var observesCurrentDirectory = false
+    private var selectionURLToRestoreAfterRefresh: URL?
 
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -137,6 +138,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func selectColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID) {
         guard let index = columns.firstIndex(where: { $0.id == columnID }) else { return }
 
+        selectionURLToRestoreAfterRefresh = nil
         refreshTask?.cancel()
         columnLoadTask?.cancel()
         columns[index].selectedItemID = item.id
@@ -199,11 +201,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func activateTab(_ id: BrowserTab.ID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
+        selectionURLToRestoreAfterRefresh = nil
         activeTabID = id
         refresh()
     }
 
     func addTab(url: URL? = nil) {
+        selectionURLToRestoreAfterRefresh = nil
         let tab = BrowserTab(url: url ?? currentURL)
         tabs.append(tab)
         activeTabID = tab.id
@@ -215,12 +219,18 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let wasActive = activeTabID == id
         tabs.remove(at: index)
         if wasActive {
+            selectionURLToRestoreAfterRefresh = nil
             activeTabID = tabs[min(index, tabs.count - 1)].id
             refresh()
         }
     }
 
-    func navigate(to url: URL, recordsHistory: Bool = true) {
+    func navigate(
+        to url: URL,
+        recordsHistory: Bool = true,
+        restoringSelectionAt selectionURL: URL? = nil
+    ) {
+        selectionURLToRestoreAfterRefresh = selectionURL?.standardizedFileURL
         var tab = activeTab
         if recordsHistory, tab.url != url {
             tab.backHistory.append(tab.url)
@@ -259,6 +269,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func goBack() {
         var tab = activeTab
         guard let destination = tab.backHistory.popLast() else { return }
+        selectionURLToRestoreAfterRefresh = nil
         tab.forwardHistory.append(tab.url)
         tab.url = destination
         activeTab = tab
@@ -268,16 +279,30 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func goForward() {
         var tab = activeTab
         guard let destination = tab.forwardHistory.popLast() else { return }
+        selectionURLToRestoreAfterRefresh = nil
         tab.backHistory.append(tab.url)
         tab.url = destination
         activeTab = tab
         refresh()
     }
 
-    func goUp() {
-        let parent = currentURL.deletingLastPathComponent()
-        guard parent.path != currentURL.path else { return }
-        navigate(to: parent)
+    @discardableResult
+    func goUp() -> Bool {
+        let departedDirectory = currentURL.standardizedFileURL
+        let parent = departedDirectory.deletingLastPathComponent().standardizedFileURL
+        guard parent.path != departedDirectory.path else { return false }
+        navigate(to: parent, restoringSelectionAt: departedDirectory)
+        return true
+    }
+
+    @discardableResult
+    func enterSelectedFolderFromKeyboard() -> Bool {
+        guard selection.count == 1,
+              let selectedID = selection.first,
+              let item = visibleItems.first(where: { $0.id == selectedID }),
+              item.isDirectory else { return false }
+        navigate(to: item.url)
+        return true
     }
 
     func open(_ item: FileItem) {
@@ -290,6 +315,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func refresh() {
         let directory = currentURL
+        let selectionURLToRestore = selectionURLToRestoreAfterRefresh
         if observesCurrentDirectory {
             directoryObserver.observe(directory) { [weak self] in self?.refresh() }
         }
@@ -317,7 +343,17 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                         errorMessage: nil
                     )
                 ]
-                selection = selection.intersection(Set(refreshedItems.map(\.id)))
+                if let selectionURLToRestore {
+                    let restoredItem = refreshedItems.first {
+                        $0.url.standardizedFileURL == selectionURLToRestore
+                    }
+                    selection = restoredItem.map { [$0.id] } ?? []
+                    if selectionURLToRestoreAfterRefresh == selectionURLToRestore {
+                        selectionURLToRestoreAfterRefresh = nil
+                    }
+                } else {
+                    selection = selection.intersection(Set(refreshedItems.map(\.id)))
+                }
                 isLoading = false
                 errorMessage = nil
                 let capacity = await provider.availableCapacity(for: directory)
@@ -338,6 +374,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     )
                 ]
                 selection = []
+                selectionURLToRestoreAfterRefresh = nil
                 isLoading = false
                 errorMessage = error.localizedDescription
                 availableCapacity = nil

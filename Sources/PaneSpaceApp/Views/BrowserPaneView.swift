@@ -13,6 +13,7 @@ struct BrowserPaneView: View {
     @State private var confirmsTrash = false
     @State private var droppedURLs: [URL] = []
     @State private var showsDropChoices = false
+    @FocusState private var isBrowserContentsFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -124,34 +125,63 @@ struct BrowserPaneView: View {
 
     @ViewBuilder
     private var paneContent: some View {
-        if model.isLoading {
-            VStack(spacing: 10) {
-                ProgressView()
-                Text("Loading folder…")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        if model.viewMode == .list {
+            // 保留同一个列表实例，避免目录加载切换视图时丢失键盘焦点。
+            ZStack {
+                FileListView(
+                    model: model,
+                    slot: slot,
+                    compact: appModel.paneLayout.prefersCompactRows,
+                    isFocused: $isBrowserContentsFocused,
+                    onGoUp: navigateToParentFromKeyboard
+                )
+                .opacity(model.isLoading || model.errorMessage != nil || model.visibleItems.isEmpty ? 0 : 1)
+
+                if model.isLoading {
+                    loadingIndicator
+                } else if let error = model.errorMessage {
+                    ContentUnavailableView(
+                        "Folder unavailable",
+                        systemImage: "exclamationmark.folder",
+                        description: Text(error)
+                    )
+                    .allowsHitTesting(false)
+                } else if model.visibleItems.isEmpty {
+                    ContentUnavailableView(
+                        L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
+                        systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
+                        description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
+                    )
+                    .allowsHitTesting(false)
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.isLoading {
+            loadingIndicator
         } else if let error = model.errorMessage {
             ContentUnavailableView(
                 "Folder unavailable",
                 systemImage: "exclamationmark.folder",
                 description: Text(error)
             )
-        } else if model.visibleItems.isEmpty, model.viewMode == .list {
-            ContentUnavailableView(
-                L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
-                systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
-                description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
-            )
         } else {
-            switch model.viewMode {
-            case .list:
-                FileListView(model: model, slot: slot, compact: appModel.paneLayout.prefersCompactRows)
-            case .columns:
-                ColumnBrowserView(model: model, slot: slot)
-            }
+            ColumnBrowserView(model: model, slot: slot)
         }
+    }
+
+    private var loadingIndicator: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("Loading folder…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+
+    private func navigateToParentFromKeyboard() -> Bool {
+        guard !model.isLoading, model.goUp() else { return false }
+        return true
     }
 }
 
@@ -820,6 +850,8 @@ private struct FileListView: View {
     @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
     let compact: Bool
+    @FocusState.Binding var isFocused: Bool
+    let onGoUp: () -> Bool
 
     @AppStorage("rowDensity") private var rowDensity = "comfortable"
     @AppStorage("alternateRowBackgrounds") private var alternateRowBackgrounds = false
@@ -861,9 +893,22 @@ private struct FileListView: View {
                         }
                         .disabled(model.isPerformingOperation)
                     }
+                    .simultaneousGesture(TapGesture().onEnded {
+                        isFocused = true
+                    })
             }
         }
         .listStyle(.inset)
+        .focusable()
+        .focused($isFocused)
+        .onKeyPress(.rightArrow) {
+            guard !model.isLoading, model.enterSelectedFolderFromKeyboard() else { return .ignored }
+            return .handled
+        }
+        .onKeyPress(.leftArrow) {
+            guard onGoUp() else { return .ignored }
+            return .handled
+        }
     }
 }
 
