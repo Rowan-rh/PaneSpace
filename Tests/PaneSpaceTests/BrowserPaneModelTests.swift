@@ -92,6 +92,21 @@ final class BrowserPaneModelTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardParentNavigationFromFirstColumnRestoresFolderSelection() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.folder.url, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+        model.setViewMode(.columns)
+
+        let firstColumn = try XCTUnwrap(model.columns.first)
+        XCTAssertTrue(model.goUp(from: firstColumn.directory))
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.root }
+
+        XCTAssertEqual(model.columns.first?.selectedItemID, fixture.folder.id)
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+    }
+
+    @MainActor
     func testColumnSelectionLoadsTheNextDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -117,6 +132,78 @@ final class BrowserPaneModelTests: XCTestCase {
         try await waitUntil { !model.isLoading && model.currentURL.standardizedFileURL == root.standardizedFileURL }
         XCTAssertEqual(model.columns.count, 1)
         XCTAssertEqual(model.columns.first?.items.map(\.name), ["Projects"])
+    }
+
+    @MainActor
+    func testColumnArrowNavigationEntersChildrenAndReturnsAcrossColumns() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+        model.setViewMode(.columns)
+
+        let rootColumn = try XCTUnwrap(model.columns.first?.id)
+        model.selectColumnItem(fixture.folder, in: rootColumn)
+        try await waitUntil { model.columns.count == 2 && model.columns.last?.isLoading == false }
+        let folderColumn = try XCTUnwrap(model.columns.last?.id)
+
+        XCTAssertEqual(model.enterSelectedColumnFolderFromKeyboard(in: rootColumn), folderColumn)
+        XCTAssertEqual(model.selection, [fixture.subfolder.id])
+        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.subfolder.url.standardizedFileURL)
+        try await waitUntil { model.columns.count == 3 && model.columns.last?.isLoading == false }
+        let emptyColumn = try XCTUnwrap(model.columns.last?.id)
+        XCTAssertTrue(try XCTUnwrap(model.columns.last).items.isEmpty)
+
+        XCTAssertEqual(model.enterSelectedColumnFolderFromKeyboard(in: folderColumn), emptyColumn)
+        XCTAssertEqual(model.returnToPreviousColumnFromKeyboard(in: emptyColumn), folderColumn)
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.folder.url }
+        XCTAssertEqual(model.columns.map(\.directory.standardizedFileURL), [fixture.folder.url.standardizedFileURL])
+        XCTAssertEqual(model.columns.first?.selectedItemID, fixture.subfolder.id)
+        XCTAssertEqual(model.selection, [fixture.subfolder.id])
+
+        XCTAssertTrue(model.goUp(from: folderColumn))
+        try await waitUntil { model.columns.count == 1 && !model.isLoading && model.currentURL == fixture.root }
+        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.root.standardizedFileURL)
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+    }
+
+    @MainActor
+    func testColumnArrowNavigationMovesSelectionAndIgnoresFiles() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+        model.setViewMode(.columns)
+        let rootColumn = try XCTUnwrap(model.columns.first?.id)
+
+        XCTAssertNil(model.enterSelectedColumnFolderFromKeyboard(in: rootColumn))
+        XCTAssertNil(model.returnToPreviousColumnFromKeyboard(in: rootColumn))
+        XCTAssertTrue(model.moveColumnSelection(by: 1, in: rootColumn))
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+        XCTAssertTrue(model.moveColumnSelection(by: 1, in: rootColumn))
+        XCTAssertEqual(model.selection, [fixture.file.id])
+        XCTAssertNil(model.enterSelectedColumnFolderFromKeyboard(in: rootColumn))
+        XCTAssertTrue(model.moveColumnSelection(by: -1, in: rootColumn))
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+    }
+
+    @MainActor
+    func testColumnArrowNavigationTargetsChildWhileItLoads() async throws {
+        let fixture = ColumnNavigationFixture()
+        let provider = DelayedColumnProvider(fixture: fixture)
+        let model = BrowserPaneModel(url: fixture.root, provider: provider)
+        try await waitUntil { !model.isLoading }
+        model.setViewMode(.columns)
+        let rootColumn = try XCTUnwrap(model.columns.first?.id)
+
+        model.selectColumnItem(fixture.folder, in: rootColumn)
+        await provider.waitUntilColumnLoadStarts()
+        XCTAssertTrue(try XCTUnwrap(model.columns.last).isLoading)
+
+        XCTAssertEqual(
+            model.enterSelectedColumnFolderFromKeyboard(in: rootColumn),
+            fixture.folder.url
+        )
+        try await waitUntil { model.columns.last?.isLoading == false }
+        XCTAssertTrue(try XCTUnwrap(model.columns.last).items.isEmpty)
     }
 
     @MainActor
