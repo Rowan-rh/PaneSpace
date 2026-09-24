@@ -39,11 +39,12 @@ actor StaticDirectoryProvider: FileProviding {
         throw FileProviderError.operationFailed
     }
 
-    func moveToTrash(_ item: URL) {
+    func moveToTrash(_ item: URL) -> URL? {
         trashedURLs.append(item)
         for (directory, items) in contentsByDirectory {
             contentsByDirectory[directory] = items.filter { $0.url != item }
         }
+        return nil
     }
 }
 

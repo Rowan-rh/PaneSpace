@@ -8,6 +8,9 @@ final class FileTransferQueueModel: ObservableObject {
 
     private let service: LocalTransferService
     var didCompleteItem: @MainActor (URL, URL) -> Void
+    /// Called once per run of a job that reached completed, failed, or cancelled. Items finished
+    /// by an earlier run are left out, so retries are not reported twice.
+    var didFinishJob: @MainActor (FileTransferJob) -> Void = { _ in }
     private var processingTask: Task<Void, Never>?
     private var pendingDecision: CheckedContinuation<FileConflictDecision?, Never>?
     private var decisionForRemainingConflicts: FileConflictDecision?
@@ -62,9 +65,15 @@ final class FileTransferQueueModel: ObservableObject {
         guard processingTask == nil,
               let index = jobs.firstIndex(where: { $0.state == .queued }) else { return }
         let jobID = jobs[index].id
+        let previouslyCompleted = Set(jobs[index].items.filter(\.isComplete).map(\.id))
         processingTask = Task { [weak self] in
             await self?.run(jobID)
             guard let self else { return }
+            if var finished = self.jobs.first(where: { $0.id == jobID }),
+               [.completed, .failed, .cancelled].contains(finished.state) {
+                finished.items.removeAll { previouslyCompleted.contains($0.id) }
+                self.didFinishJob(finished)
+            }
             self.processingTask = nil
             self.decisionForRemainingConflicts = nil
             self.startNextJob()
@@ -99,7 +108,7 @@ final class FileTransferQueueModel: ObservableObject {
             let directory = jobs[jobIndex].destinationDirectory
             do {
                 if jobs[jobIndex].items[itemIndex].needsSourceRemoval {
-                    try await service.removeSourceAfterCopy(source)
+                    jobs[jobIndex].items[itemIndex].sourceInTrash = try await service.removeSourceAfterCopy(source)
                     jobs[jobIndex].items[itemIndex].needsSourceRemoval = false
                 } else {
                     try await service.validate(source: source, destinationDirectory: directory)
@@ -111,15 +120,17 @@ final class FileTransferQueueModel: ObservableObject {
                     } else {
                         decision = nil
                     }
-                    let destination = try await service.transfer(
+                    let outcome = try await service.transfer(
                         source: source,
                         to: directory,
                         kind: jobs[jobIndex].kind,
                         conflictDecision: decision,
                         progress: counter
                     )
-                    jobs[jobIndex].items[itemIndex].destination = destination
-                    if destination != nil {
+                    jobs[jobIndex].items[itemIndex].destination = outcome?.destination
+                    jobs[jobIndex].items[itemIndex].replacedItemInTrash = outcome?.replacedItemInTrash
+                    jobs[jobIndex].items[itemIndex].sourceInTrash = outcome?.sourceInTrash
+                    if outcome != nil {
                         didCompleteItem(source.deletingLastPathComponent(), directory)
                     }
                 }

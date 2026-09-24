@@ -6,16 +6,20 @@ actor LocalTransferService {
 
     private let fileManager: FileManager
     private let copyItem: CopyItem
-    private let trashItem: @Sendable (URL) throws -> Void
+    private let trashItem: @Sendable (URL) throws -> URL?
 
     init(
         fileManager: FileManager = FileManager(),
         copyItem: CopyItem? = nil,
-        trashItem: (@Sendable (URL) throws -> Void)? = nil
+        trashItem: (@Sendable (URL) throws -> URL?)? = nil
     ) {
         self.fileManager = fileManager
         self.copyItem = copyItem ?? { try LocalFileCopier.copy(from: $0, to: $1, progress: $2) }
-        self.trashItem = trashItem ?? { try FileManager().trashItem(at: $0, resultingItemURL: nil) }
+        self.trashItem = trashItem ?? { url in
+            var resultingURL: NSURL?
+            try FileManager().trashItem(at: url, resultingItemURL: &resultingURL)
+            return resultingURL as URL?
+        }
     }
 
     func validate(source: URL, destinationDirectory: URL) throws {
@@ -56,7 +60,7 @@ actor LocalTransferService {
         kind: FileTransferKind,
         conflictDecision: FileConflictDecision?,
         progress: TransferByteCounter? = nil
-    ) throws -> URL? {
+    ) throws -> LocalTransferOutcome? {
         try validate(source: source, destinationDirectory: destinationDirectory)
         try Task.checkCancellation()
 
@@ -87,17 +91,19 @@ actor LocalTransferService {
         try copyItem(source, staging, progress)
         try Task.checkCancellation()
 
+        var replacedItemInTrash: URL?
         if exists(at: target) {
             guard conflictDecision == .replace else {
                 throw LocalTransferError.destinationExists
             }
-            try trashItem(target)
+            replacedItemInTrash = try trashItem(target)
         }
         try fileManager.moveItem(at: staging, to: target)
 
+        var sourceInTrash: URL?
         if kind == .move {
             do {
-                try trashItem(source)
+                sourceInTrash = try trashItem(source)
             } catch {
                 throw LocalTransferError.sourceRemovalFailed(
                     destination: target,
@@ -105,7 +111,11 @@ actor LocalTransferService {
                 )
             }
         }
-        return target
+        return LocalTransferOutcome(
+            destination: target,
+            replacedItemInTrash: replacedItemInTrash,
+            sourceInTrash: sourceInTrash
+        )
     }
 
     /// Total bytes a transfer of `source` copies. Unreadable items count as zero so progress
@@ -120,7 +130,8 @@ actor LocalTransferService {
         }
     }
 
-    func removeSourceAfterCopy(_ source: URL) throws {
+    @discardableResult
+    func removeSourceAfterCopy(_ source: URL) throws -> URL? {
         try trashItem(source)
     }
 
@@ -144,4 +155,13 @@ actor LocalTransferService {
         defer { free(resolvedPath) }
         return URL(fileURLWithPath: String(cString: resolvedPath))
     }
+}
+
+/// Where a transferred item ended up, and where anything it displaced went.
+struct LocalTransferOutcome: Sendable {
+    let destination: URL
+    /// The existing destination item that Replace moved to the Trash.
+    let replacedItemInTrash: URL?
+    /// For moves, the source item after it was moved to the Trash.
+    let sourceInTrash: URL?
 }

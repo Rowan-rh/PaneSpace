@@ -29,6 +29,8 @@ struct FileTransferItem: Identifiable, Sendable {
     var byteCount: Int64?
     var isComplete = false
     var needsSourceRemoval = false
+    var replacedItemInTrash: URL?
+    var sourceInTrash: URL?
     var errorMessage: String?
 
     init(source: URL) {

@@ -4,7 +4,9 @@ protocol FileProviding: Sendable {
     func contents(of directory: URL, showsHiddenFiles: Bool) async throws -> [FileItem]
     func createFolder(named name: String, in directory: URL) async throws -> URL
     func rename(_ item: URL, to newName: String) async throws -> URL
-    func moveToTrash(_ item: URL) async throws
+    /// Returns where the item ended up in the Trash when the provider knows it.
+    @discardableResult
+    func moveToTrash(_ item: URL) async throws -> URL?
     func availableCapacity(for directory: URL) async -> Int64?
 }
 
@@ -86,9 +88,11 @@ actor LocalFileProvider: FileProviding {
         }
     }
 
-    func moveToTrash(_ item: URL) throws {
+    func moveToTrash(_ item: URL) throws -> URL? {
         do {
-            try fileManager.trashItem(at: item, resultingItemURL: nil)
+            var resultingURL: NSURL?
+            try fileManager.trashItem(at: item, resultingItemURL: &resultingURL)
+            return resultingURL as URL?
         } catch {
             throw FileProviderError.normalizing(error)
         }

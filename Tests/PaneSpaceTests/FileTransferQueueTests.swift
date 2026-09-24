@@ -19,7 +19,9 @@ final class FileTransferQueueTests: XCTestCase {
             try Data("old".utf8).write(to: destination.appendingPathComponent(name))
         }
         let service = LocalTransferService(trashItem: { url in
-            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+            let trashed = trash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
         })
         let queue = FileTransferQueueModel(service: service)
         queue.enqueue(kind: .copy, sources: names.map { source.appendingPathComponent($0) }, destinationDirectory: destination)
@@ -77,7 +79,9 @@ final class FileTransferQueueTests: XCTestCase {
         let attempts = AttemptCounter()
         let service = LocalTransferService(trashItem: { url in
             if attempts.shouldFail() { throw CocoaError(.fileWriteNoPermission) }
-            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+            let trashed = trash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
         })
         let queue = FileTransferQueueModel(service: service)
         queue.enqueue(kind: .move, sources: [source], destinationDirectory: destination)

@@ -110,6 +110,13 @@ struct PaneSpaceApp: App {
                 }
                 .disabled(!appModel.canTransferSelection)
                 .keyboardShortcut("m", modifiers: [.command, .control])
+
+                Divider()
+
+                Button("Operation History…") {
+                    appModel.isShowingOperationHistory = true
+                }
+                .keyboardShortcut("h", modifiers: [.command, .control])
             }
 
             CommandGroup(replacing: .appSettings) {
