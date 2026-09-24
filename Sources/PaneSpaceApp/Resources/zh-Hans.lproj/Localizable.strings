@@ -302,4 +302,5 @@
 "Pane %lld" = "面板 %lld";
 "An item named %@ already exists." = "已存在名为“%@”的项目。";
 "The destination is inside the source or is the same folder." = "目标位置与源位置相同，或位于源文件夹内。";
+"You don’t have permission to write to “%@”." = "没有写入“%@”的权限。";
 "The copy completed, but the source could not be moved to Trash: %@" = "复制已完成，但源项目无法移到废纸篓：%@";

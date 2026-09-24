@@ -376,8 +376,27 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             return nil
         }
 
-        navigate(to: parentColumn.directory, restoringSelectionAt: columns[columnIndex].directory)
+        // Like Finder, only move focus back one column: earlier columns and the current column
+        // stay visible, and nothing is reloaded.
+        selectionURLToRestoreAfterRefresh = nil
+        columnLoadTask?.cancel()
+        if columns.count > columnIndex + 1 {
+            columns.removeSubrange((columnIndex + 1)...)
+        }
+        columns[columnIndex].selectedItemID = nil
+        selection = [parentFolder.id]
+        updateActiveTabURL(parentFolder.url)
+        items = columns[columnIndex].items
+        errorMessage = columns[columnIndex].errorMessage
+        syncDirectoryObservers()
         return parentColumn.id
+    }
+
+    /// Where items transferred into this pane land. In the column browser this is the folder the
+    /// visible selection lives in, not a folder that is merely selected but not opened.
+    var transferDestinationURL: URL {
+        guard viewMode == .columns, let lastColumn = columns.last else { return currentURL }
+        return columns.last(where: { $0.selectedItemID != nil })?.directory ?? lastColumn.directory
     }
 
     func open(_ item: FileItem) {

@@ -155,15 +155,46 @@ final class BrowserPaneModelTests: XCTestCase {
 
         XCTAssertEqual(model.enterSelectedColumnFolderFromKeyboard(in: folderColumn), emptyColumn)
         XCTAssertEqual(model.returnToPreviousColumnFromKeyboard(in: emptyColumn), folderColumn)
-        try await waitUntil { !model.isLoading && model.currentURL == fixture.folder.url }
-        XCTAssertEqual(model.columns.map(\.directory.standardizedFileURL), [fixture.folder.url.standardizedFileURL])
-        XCTAssertEqual(model.columns.first?.selectedItemID, fixture.subfolder.id)
+        XCTAssertEqual(model.columns.map(\.id), [rootColumn, folderColumn, emptyColumn])
+        XCTAssertEqual(model.columns[1].selectedItemID, fixture.subfolder.id)
+        XCTAssertNil(model.columns[2].selectedItemID)
         XCTAssertEqual(model.selection, [fixture.subfolder.id])
+        XCTAssertFalse(model.isLoading)
 
-        XCTAssertTrue(model.goUp(from: folderColumn))
-        try await waitUntil { model.columns.count == 1 && !model.isLoading && model.currentURL == fixture.root }
-        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.root.standardizedFileURL)
+        XCTAssertEqual(model.returnToPreviousColumnFromKeyboard(in: folderColumn), rootColumn)
+        XCTAssertEqual(model.columns.map(\.id), [rootColumn, folderColumn])
+        XCTAssertEqual(model.columns[0].selectedItemID, fixture.folder.id)
+        XCTAssertNil(model.columns[1].selectedItemID)
         XCTAssertEqual(model.selection, [fixture.folder.id])
+        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.folder.url.standardizedFileURL)
+        XCTAssertNil(model.returnToPreviousColumnFromKeyboard(in: rootColumn))
+
+        XCTAssertEqual(model.enterSelectedColumnFolderFromKeyboard(in: rootColumn), folderColumn)
+        XCTAssertEqual(model.selection, [fixture.subfolder.id])
+        XCTAssertEqual(model.columns.map(\.id), [rootColumn, folderColumn, emptyColumn])
+
+        XCTAssertTrue(model.goUp(from: rootColumn))
+        try await waitUntil { model.columns.count == 1 && !model.isLoading && model.currentURL.path == "/" }
+    }
+
+    @MainActor
+    func testTransferDestinationUsesTheFolderHoldingTheVisibleSelection() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.root, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+        XCTAssertEqual(model.transferDestinationURL, fixture.root)
+
+        model.setViewMode(.columns)
+        XCTAssertEqual(model.transferDestinationURL, fixture.root)
+
+        model.selectColumnItem(fixture.folder, in: fixture.root)
+        try await waitUntil { model.columns.count == 2 && model.columns.last?.isLoading == false }
+        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.folder.url.standardizedFileURL)
+        XCTAssertEqual(model.transferDestinationURL, fixture.root)
+
+        model.selectColumnItem(fixture.subfolder, in: fixture.folder.url)
+        try await waitUntil { model.columns.count == 3 && model.columns.last?.isLoading == false }
+        XCTAssertEqual(model.transferDestinationURL, fixture.folder.url)
     }
 
     @MainActor

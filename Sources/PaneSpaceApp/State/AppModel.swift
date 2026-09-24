@@ -207,7 +207,7 @@ final class AppModel: ObservableObject {
         transferQueue.enqueue(
             kind: kind,
             sources: urls,
-            destinationDirectory: pane(for: destinationSlot).currentURL
+            destinationDirectory: pane(for: destinationSlot).transferDestinationURL
         )
     }
 

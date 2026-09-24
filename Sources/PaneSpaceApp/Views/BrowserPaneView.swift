@@ -747,10 +747,17 @@ private struct ColumnBrowserView: View {
                       model.goUp(from: column.directory) else { return .ignored }
                 return .handled
             }
-            .onChange(of: model.columns.count) {
-                guard let lastColumn = model.columns.last else { return }
+            .onChange(of: model.columns.count) { oldCount, newCount in
+                // Only reveal new columns; moving back keeps the focused column in view instead.
+                guard newCount > oldCount, let lastColumn = model.columns.last else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo(lastColumn.id, anchor: .trailing)
+                }
+            }
+            .onChange(of: focusedColumnID) { _, columnID in
+                guard let columnID else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(columnID)
                 }
             }
             .onChange(of: model.columns.map(\.id)) { _, columnIDs in
@@ -840,11 +847,13 @@ private struct ColumnView: View {
                     systemImage: "exclamationmark.folder",
                     description: Text(errorMessage)
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.displayedItems(from: column.items).isEmpty {
                 ContentUnavailableView(
                     L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                     systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass"
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
