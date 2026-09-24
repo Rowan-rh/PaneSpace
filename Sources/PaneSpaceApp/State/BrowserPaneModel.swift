@@ -1046,6 +1046,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         activeTab = tab
     }
 
+    /// Keeps tabs and history pointing at an item renamed outside this pane, such as by undo.
+    func followRename(from source: URL, to destination: URL) {
+        let previousURL = currentURL
+        remapTabs(from: source, to: destination)
+        if currentURL != previousURL {
+            loadCurrentDirectory()
+        }
+    }
+
     private func remapTabs(from source: URL, to destination: URL) {
         tabs = tabs.map { tab in
             var updatedTab = tab
@@ -1061,17 +1070,28 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     private func remapping(_ url: URL, from source: URL, to destination: URL) -> URL {
-        let standardizedURL = url.standardizedFileURL
-        let standardizedSource = source.standardizedFileURL
-        let standardizedDestination = destination.standardizedFileURL
-        guard standardizedURL == standardizedSource ||
-                standardizedURL.path.hasPrefix(standardizedSource.path + "/") else {
+        let path = Self.comparablePath(url)
+        let sourcePath = Self.comparablePath(source)
+        guard path == sourcePath || path.hasPrefix(sourcePath + "/") else {
             return url
         }
 
-        let relativePath = String(standardizedURL.path.dropFirst(standardizedSource.path.count))
+        let standardizedDestination = destination.standardizedFileURL
+        let relativePath = String(path.dropFirst(sourcePath.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !relativePath.isEmpty else { return standardizedDestination }
         return standardizedDestination.appendingPathComponent(relativePath, isDirectory: true)
+    }
+
+    /// `standardizedFileURL` drops the `/private` prefix of `/var` and `/tmp` only while the path
+    /// exists, so a renamed item's old URL and a stored tab URL can disagree. Normalize textually.
+    static func comparablePath(_ url: URL) -> String {
+        var path = url.standardizedFileURL.path
+        for alias in ["/private/var", "/private/tmp", "/private/etc"]
+        where path == alias || path.hasPrefix(alias + "/") {
+            path.removeFirst("/private".count)
+            break
+        }
+        return path
     }
 }

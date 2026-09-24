@@ -370,3 +370,11 @@
 "Move %lld items to the Trash" = "将 %lld 个项目移到废纸篓";
 "New folder “%@”" = "新建文件夹“%@”";
 "Done" = "完成";
+"Undo" = "撤销";
+"Redo" = "重做";
+"Undo %@" = "撤销%@";
+"This operation can no longer be undone." = "此操作已无法撤销。";
+"“%@” cannot be restored because another item now uses its original location." = "无法恢复“%@”，因为其原位置已有其他项目。";
+"“%@” was moved or deleted after the operation, so it cannot be undone." = "“%@”在操作后已被移动或删除，无法撤销。";
+"“%@” is not empty anymore, so it was not moved to the Trash." = "“%@”已不再为空，因此未移到废纸篓。";
+"%lld items were restored and %lld could not be: %@" = "已恢复 %lld 个项目，%lld 个无法恢复：%@";

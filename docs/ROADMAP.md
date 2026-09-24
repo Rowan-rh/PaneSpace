@@ -27,7 +27,7 @@ For a detailed inventory of unfinished and partially implemented features, inclu
 - [x] Local file URL drag and drop into panes
 - [x] Byte progress and cancellation of large items
 - [x] Persistent operation history
-- [ ] Undo support where platform behavior permits
+- [x] Undo support where platform behavior permits
 - [ ] Large-directory loading without blocking the UI
 - [x] File-system observation and live refresh
 

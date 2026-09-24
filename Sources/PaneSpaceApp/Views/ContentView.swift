@@ -130,6 +130,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $appModel.isShowingOperationHistory) {
             OperationHistoryView(queue: appModel.transferQueue, history: appModel.operationHistory)
+                .environmentObject(appModel)
         }
         .sheet(isPresented: $appModel.isShowingSettings) {
             SettingsView()
