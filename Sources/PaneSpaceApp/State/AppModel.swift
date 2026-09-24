@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     /// keyboard focus without stealing it from a control the user clicked.
     @Published private(set) var paneFocusRequest = 0
     @Published private(set) var transferQueue = FileTransferQueueModel()
+    let workspaceShortcuts: WorkspaceShortcutsModel
 
     @Published private(set) var primaryPane: BrowserPaneModel
     @Published private(set) var secondaryPane: BrowserPaneModel
@@ -34,6 +35,7 @@ final class AppModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
         let downloads = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? home
@@ -98,6 +100,9 @@ final class AppModel: ObservableObject {
             self?.refreshOpenPanes(in: [sourceDirectory, destinationDirectory])
         }
         transferQueue.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &paneObservationCancellables)
+        workspaceShortcuts.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &paneObservationCancellables)
         syncDirectoryObservation()

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SidebarView: View {
@@ -20,8 +21,13 @@ struct SidebarView: View {
 
                 if showWorkspaceGroup {
                     Section("Workspaces") {
-                        ForEach(model.workspaces) { location in
-                            locationRow(location)
+                        ForEach(workspaceShortcuts.shortcuts) { shortcut in
+                            workspaceRow(shortcut)
+                        }
+                        if workspaceShortcuts.shortcuts.isEmpty {
+                            Text("Add workspaces in Settings")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -89,6 +95,22 @@ struct SidebarView: View {
             guard let selectedID,
                   let location = navigableLocations.first(where: { $0.id == selectedID }) else { return }
             appModel.openSidebarLocation(location)
+            if selectedID.hasPrefix("workspace:") {
+                // The folder may have disappeared since the last check; grey it out if so.
+                workspaceShortcuts.refreshAvailability()
+            }
+        }
+        .onChange(of: appModel.activePaneModel.errorMessage) { _, errorMessage in
+            // A folder that fails to load may be a workspace that was just moved or deleted.
+            if errorMessage != nil {
+                workspaceShortcuts.refreshAvailability()
+            }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
+            refreshLocations()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in
+            refreshLocations()
         }
         .onChange(of: appModel.activePaneModel.currentURL) {
             appModel.syncSidebarSelection(with: navigableLocations)
@@ -104,15 +126,50 @@ struct SidebarView: View {
         }
         .onChange(of: scenePhase) {
             if scenePhase == .active {
-                model.refresh()
+                refreshLocations()
             }
         }
     }
 
+    private func refreshLocations() {
+        model.refresh()
+        workspaceShortcuts.refreshAvailability()
+    }
+
+    private var workspaceShortcuts: WorkspaceShortcutsModel {
+        appModel.workspaceShortcuts
+    }
+
+    private var availableWorkspaceLocations: [SidebarLocation] {
+        workspaceShortcuts.shortcuts
+            .filter { !workspaceShortcuts.unavailableIDs.contains($0.id) }
+            .map {
+                SidebarLocation(id: $0.sidebarID, title: $0.name, systemImage: $0.systemImage, url: $0.url)
+            }
+    }
+
     private var navigableLocations: [SidebarLocation] {
         model.favorites
-            + (showWorkspaceGroup ? model.workspaces : [])
+            + (showWorkspaceGroup ? availableWorkspaceLocations : [])
             + (showVolumesGroup ? model.volumes : [])
+    }
+
+    // Workspace names are user data, so they are shown verbatim rather than looked up for
+    // localization. Missing folders stay listed but untagged, which makes them unselectable and
+    // drops a selection they held when their folder disappeared.
+    @ViewBuilder
+    private func workspaceRow(_ shortcut: WorkspaceShortcut) -> some View {
+        let label = Label(shortcut.name, systemImage: shortcut.systemImage)
+        if workspaceShortcuts.unavailableIDs.contains(shortcut.id) {
+            label
+                .foregroundStyle(.secondary)
+                .opacity(0.55)
+                .help(L10n.text("This folder is currently unavailable."))
+        } else {
+            label
+                .help((shortcut.path as NSString).abbreviatingWithTildeInPath)
+                .tag(shortcut.sidebarID)
+        }
     }
 
     private func locationRow(_ location: SidebarLocation) -> some View {

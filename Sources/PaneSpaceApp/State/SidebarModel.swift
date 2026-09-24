@@ -3,7 +3,6 @@ import Foundation
 @MainActor
 final class SidebarModel: ObservableObject {
     @Published private(set) var favorites: [SidebarLocation] = []
-    @Published private(set) var workspaces: [SidebarLocation] = []
     @Published private(set) var volumes: [SidebarLocation] = []
 
     private let provider: SidebarLocationProviding
@@ -20,7 +19,6 @@ final class SidebarModel: ObservableObject {
             let snapshot = await provider.snapshot()
             guard !Task.isCancelled else { return }
             favorites = snapshot.favorites
-            workspaces = snapshot.workspaces
             volumes = snapshot.volumes
         }
     }
