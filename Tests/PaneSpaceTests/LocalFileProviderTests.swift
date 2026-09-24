@@ -30,6 +30,28 @@ final class LocalFileProviderTests: XCTestCase {
         XCTAssertEqual(items.first?.isDirectory, true)
     }
 
+    func testMarksApplicationBundlesAsPackagesInsteadOfFolders() async throws {
+        let application = temporaryDirectory.appendingPathComponent("Tool.app", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: application.appendingPathComponent("Contents", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory.appendingPathComponent("Plain", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let items = try await provider.contents(of: temporaryDirectory, showsHiddenFiles: false)
+        let package = try XCTUnwrap(items.first { $0.name == "Tool.app" })
+        let folder = try XCTUnwrap(items.first { $0.name == "Plain" })
+
+        XCTAssertTrue(package.isDirectory)
+        XCTAssertTrue(package.isPackage)
+        XCTAssertFalse(package.isFolder)
+        XCTAssertFalse(folder.isPackage)
+        XCTAssertTrue(folder.isFolder)
+    }
+
     func testRenamesItem() async throws {
         let original = temporaryDirectory.appendingPathComponent("before.txt")
         try Data("hello".utf8).write(to: original)

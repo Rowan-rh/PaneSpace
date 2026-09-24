@@ -247,7 +247,8 @@
 "The name is not valid." = "名称无效。";
 "The item is no longer available." = "该项目已不可用。";
 "The file operation could not be completed." = "无法完成文件操作。";
-"The selected items will be moved to the Trash." = "所选项目将被移到废纸篓。";
+"“%@” will be moved to the Trash." = "“%@”将被移到废纸篓。";
+"%lld items will be moved to the Trash." = "%lld 个项目将被移到废纸篓。";
 "Theme" = "主题";
 "Theme intensity" = "主题强度";
 "There are no items here." = "这里没有任何项目。";

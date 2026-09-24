@@ -24,6 +24,7 @@ actor LocalFileProvider: FileProviding {
     func contents(of directory: URL, showsHiddenFiles: Bool) throws -> [FileItem] {
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey,
+            .isPackageKey,
             .isHiddenKey,
             .fileSizeKey,
             .contentModificationDateKey,
@@ -45,7 +46,8 @@ actor LocalFileProvider: FileProviding {
                     isHidden: values.isHidden ?? false,
                     fileSize: values.fileSize.map(Int64.init),
                     modificationDate: values.contentModificationDate,
-                    kind: values.localizedTypeDescription ?? L10n.text("Item")
+                    kind: values.localizedTypeDescription ?? L10n.text("Item"),
+                    isPackage: values.isPackage ?? false
                 )
             }
         } catch {

@@ -18,6 +18,9 @@ final class AppModel: ObservableObject {
     @Published var isShowingSettings = false
     @Published private(set) var locationEditRequest = 0
     @Published private(set) var searchFocusRequest = 0
+    /// Incremented only when the keyboard changes the active pane, so the new pane can take
+    /// keyboard focus without stealing it from a control the user clicked.
+    @Published private(set) var paneFocusRequest = 0
     @Published private(set) var transferQueue = FileTransferQueueModel()
 
     @Published private(set) var primaryPane: BrowserPaneModel
@@ -126,6 +129,7 @@ final class AppModel: ObservableObject {
         let slots = paneLayout.visibleSlots
         guard slots.count > 1, let index = slots.firstIndex(of: activePane) else { return }
         activePane = slots[(index + (backward ? slots.count - 1 : 1)) % slots.count]
+        paneFocusRequest += 1
     }
 
     func requestLocationEditing() {
