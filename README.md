@@ -13,7 +13,7 @@ PaneSpace 是一款面向 macOS 26+ 的原生开源文件管理器，适合经�
 
 ## 下载
 
-**[下载 PaneSpace 0.1.0（Apple silicon）](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.0/PaneSpace-0.1.0-macos-arm64.zip)** · [查看所有版本](https://github.com/Rowan-rh/PaneSpace/releases)
+**[下载 PaneSpace 0.1.1（Apple silicon）](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.1/PaneSpace-0.1.1-macos-arm64.zip)** · [查看所有版本](https://github.com/Rowan-rh/PaneSpace/releases)
 
 下载并解压 ZIP，将 `PaneSpace.app` 拖到“应用程序”文件夹后启动。当前下载包适用于 **macOS 26 或更高版本的 Apple silicon Mac**。
 
