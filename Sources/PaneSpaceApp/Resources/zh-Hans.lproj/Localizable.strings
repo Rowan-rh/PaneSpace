@@ -247,7 +247,8 @@
 "The name is not valid." = "名称无效。";
 "The item is no longer available." = "该项目已不可用。";
 "The file operation could not be completed." = "无法完成文件操作。";
-"The selected items will be moved to the Trash." = "所选项目将被移到废纸篓。";
+"“%@” will be moved to the Trash." = "“%@”将被移到废纸篓。";
+"%lld items will be moved to the Trash." = "%lld 个项目将被移到废纸篓。";
 "Theme" = "主题";
 "Theme intensity" = "主题强度";
 "There are no items here." = "这里没有任何项目。";
@@ -301,4 +302,5 @@
 "Pane %lld" = "面板 %lld";
 "An item named %@ already exists." = "已存在名为“%@”的项目。";
 "The destination is inside the source or is the same folder." = "目标位置与源位置相同，或位于源文件夹内。";
+"You don’t have permission to write to “%@”." = "没有写入“%@”的权限。";
 "The copy completed, but the source could not be moved to Trash: %@" = "复制已完成，但源项目无法移到废纸篓：%@";

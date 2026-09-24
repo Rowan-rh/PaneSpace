@@ -133,6 +133,27 @@ final class AppSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardPaneCyclingRequestsContentFocusButDirectActivationDoesNot() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults)
+        model.paneLayout = .twoColumns
+        model.activePane = .primary
+        let initialRequest = model.paneFocusRequest
+
+        model.activePane = .secondary
+        XCTAssertEqual(model.paneFocusRequest, initialRequest)
+
+        model.cycleActivePane(backward: true)
+        XCTAssertEqual(model.activePane, .primary)
+        XCTAssertEqual(model.paneFocusRequest, initialRequest + 1)
+
+        model.paneLayout = .single
+        model.cycleActivePane(backward: false)
+        XCTAssertEqual(model.paneFocusRequest, initialRequest + 1)
+    }
+
+    @MainActor
     func testAddingPaneAfterClosingOneUsesActiveLocationInsteadOfHiddenPaneLocation() throws {
         let (defaults, suiteName) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }

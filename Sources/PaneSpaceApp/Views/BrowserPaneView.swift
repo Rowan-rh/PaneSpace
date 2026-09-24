@@ -11,9 +11,11 @@ struct BrowserPaneView: View {
 
     @State private var renameText = ""
     @State private var confirmsTrash = false
+    @State private var pendingTrashItems: [FileItem] = []
     @State private var droppedURLs: [URL] = []
     @State private var showsDropChoices = false
     @FocusState private var isBrowserContentsFocused: Bool
+    @State private var columnFocusRequest = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,6 +72,14 @@ struct BrowserPaneView: View {
         .simultaneousGesture(TapGesture().onEnded {
             appModel.activePane = slot
         })
+        .onChange(of: appModel.paneFocusRequest) {
+            guard appModel.activePane == slot else { return }
+            if model.viewMode == .list {
+                isBrowserContentsFocused = true
+            } else {
+                columnFocusRequest += 1
+            }
+        }
         .dropDestination(for: URL.self) { urls, _ in
             let localURLs = urls.filter(\.isFileURL)
             guard !localURLs.isEmpty else { return false }
@@ -87,18 +97,16 @@ struct BrowserPaneView: View {
             Button("Cancel", role: .cancel) {}
         }
         .onDeleteCommand {
-            if !model.selection.isEmpty {
-                confirmsTrash = true
-            }
+            requestTrash(model.selectedItems)
         }
-        .alert("Move to Trash?", isPresented: $confirmsTrash) {
+        .alert("Move to Trash?", isPresented: $confirmsTrash, presenting: pendingTrashItems) { targets in
             Button("Cancel", role: .cancel) {}
             Button("Move to Trash", role: .destructive) {
-                model.trashSelection()
+                model.trash(targets)
             }
             .disabled(model.isPerformingOperation)
-        } message: {
-            Text("The selected items will be moved to the Trash.")
+        } message: { targets in
+            Text(trashConfirmationMessage(for: targets))
         }
         .sheet(item: $model.renameTarget) { item in
             VStack(alignment: .leading, spacing: 16) {
@@ -133,11 +141,12 @@ struct BrowserPaneView: View {
                     slot: slot,
                     compact: appModel.paneLayout.prefersCompactRows,
                     isFocused: $isBrowserContentsFocused,
-                    onGoUp: navigateToParentFromKeyboard
+                    onGoUp: navigateToParentFromKeyboard,
+                    requestTrash: requestTrash
                 )
-                .opacity(model.isLoading || model.errorMessage != nil || model.visibleItems.isEmpty ? 0 : 1)
+                .opacity(model.showsLoadingIndicator || model.errorMessage != nil || model.visibleItems.isEmpty ? 0 : 1)
 
-                if model.isLoading {
+                if model.showsLoadingIndicator {
                     loadingIndicator
                 } else if let error = model.errorMessage {
                     ContentUnavailableView(
@@ -159,11 +168,16 @@ struct BrowserPaneView: View {
             // Keep the column browser mounted during refreshes so keyboard focus
             // survives navigation to another directory.
             ZStack {
-                ColumnBrowserView(model: model, slot: slot)
-                    .opacity(model.isLoading || model.errorMessage != nil ? 0 : 1)
-                    .allowsHitTesting(!model.isLoading && model.errorMessage == nil)
+                ColumnBrowserView(
+                    model: model,
+                    slot: slot,
+                    focusRequest: columnFocusRequest,
+                    requestTrash: requestTrash
+                )
+                    .opacity(model.showsLoadingIndicator || model.errorMessage != nil ? 0 : 1)
+                    .allowsHitTesting(!model.showsLoadingIndicator && model.errorMessage == nil)
 
-                if model.isLoading {
+                if model.showsLoadingIndicator {
                     loadingIndicator
                 } else if let error = model.errorMessage {
                     ContentUnavailableView(
@@ -186,6 +200,20 @@ struct BrowserPaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
+    }
+
+    // Every trash entry point, keyboard or menu, goes through the same confirmation.
+    private func requestTrash(_ targets: [FileItem]) {
+        guard !targets.isEmpty else { return }
+        pendingTrashItems = targets
+        confirmsTrash = true
+    }
+
+    private func trashConfirmationMessage(for targets: [FileItem]) -> String {
+        if targets.count == 1, let item = targets.first {
+            return L10n.format("“%@” will be moved to the Trash.", item.name)
+        }
+        return L10n.format("%lld items will be moved to the Trash.", Int64(targets.count))
     }
 
     private func navigateToParentFromKeyboard() -> Bool {
@@ -646,7 +674,7 @@ private struct PathBarView: View {
     private var actionMenuItems: some View {
         Button("New Folder") { appModel.requestNewFolder() }
         Button("Show in Finder") { model.revealSelectionInFinder() }
-            .disabled(model.selection.isEmpty)
+            .disabled(model.selectedItems.isEmpty)
         Divider()
         Button("Open in Terminal — Planned") {}
             .disabled(true)
@@ -660,6 +688,8 @@ private struct PathBarView: View {
 private struct ColumnBrowserView: View {
     @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
+    let focusRequest: Int
+    let requestTrash: ([FileItem]) -> Void
 
     @FocusState private var isColumnBrowserFocused: Bool
     @State private var focusedColumnID: BrowserColumn.ID?
@@ -675,6 +705,7 @@ private struct ColumnBrowserView: View {
                             slot: slot,
                             column: column,
                             focusColumn: focusColumn,
+                            requestTrash: requestTrash,
                             pendingKeyboardEntryColumnID: $pendingKeyboardEntryColumnID
                         )
                             .frame(width: 250)
@@ -684,6 +715,8 @@ private struct ColumnBrowserView: View {
                 }
             }
             .focusable()
+            // The accent line above the active pane already shows where keyboard focus is.
+            .focusEffectDisabled()
             .focused($isColumnBrowserFocused)
             .onKeyPress(.upArrow) {
                 moveColumnSelection(by: -1)
@@ -716,10 +749,17 @@ private struct ColumnBrowserView: View {
                       model.goUp(from: column.directory) else { return .ignored }
                 return .handled
             }
-            .onChange(of: model.columns.count) {
-                guard let lastColumn = model.columns.last else { return }
+            .onChange(of: model.columns.count) { oldCount, newCount in
+                // Only reveal new columns; moving back keeps the focused column in view instead.
+                guard newCount > oldCount, let lastColumn = model.columns.last else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo(lastColumn.id, anchor: .trailing)
+                }
+            }
+            .onChange(of: focusedColumnID) { _, columnID in
+                guard let columnID else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(columnID)
                 }
             }
             .onChange(of: model.columns.map(\.id)) { _, columnIDs in
@@ -737,7 +777,7 @@ private struct ColumnBrowserView: View {
                       let column = model.columns.first(where: { $0.id == pendingKeyboardEntryColumnID }),
                       !column.isLoading else { return }
                 self.pendingKeyboardEntryColumnID = nil
-                guard let firstItem = model.displayedItems(from: column.items).first else { return }
+                guard let firstItem = model.displayedItems(in: column).first else { return }
                 model.selectColumnItem(firstItem, in: column.id)
                 focusedColumnID = column.id
             }
@@ -745,6 +785,9 @@ private struct ColumnBrowserView: View {
                 if focusedColumnID == nil {
                     focusedColumnID = model.columns.last?.id
                 }
+            }
+            .onChange(of: focusRequest) {
+                isColumnBrowserFocused = true
             }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
@@ -776,7 +819,12 @@ private struct ColumnView: View {
     let slot: PaneSlot
     let column: BrowserColumn
     let focusColumn: (BrowserColumn.ID) -> Void
+    let requestTrash: ([FileItem]) -> Void
     @Binding var pendingKeyboardEntryColumnID: BrowserColumn.ID?
+
+    private var displayedItems: [FileItem] {
+        model.displayedItems(in: column)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -805,60 +853,57 @@ private struct ColumnView: View {
                     systemImage: "exclamationmark.folder",
                     description: Text(errorMessage)
                 )
-            } else if model.displayedItems(from: column.items).isEmpty {
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if displayedItems.isEmpty {
                 ContentUnavailableView(
                     L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                     systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass"
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(model.displayedItems(from: column.items)) { item in
-                            Button {
-                                pendingKeyboardEntryColumnID = nil
-                                model.selectColumnItem(item, in: column.id)
-                                focusColumn(column.id)
-                            } label: {
-                                ColumnItemRow(
-                                    item: item,
-                                    isSelected: column.selectedItemID == item.id
-                                )
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .draggable(item.url)
-                            .accessibilityLabel(item.name)
-                            .accessibilityValue(item.isDirectory ? "Folder" : item.kind)
-                            .simultaneousGesture(
-                                TapGesture(count: 2).onEnded {
-                                    if !item.isDirectory {
-                                        model.open(item)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 1) {
+                            ForEach(displayedItems) { item in
+                                Button {
+                                    pendingKeyboardEntryColumnID = nil
+                                    model.selectColumnItem(item, in: column.id)
+                                    focusColumn(column.id)
+                                } label: {
+                                    ColumnItemRow(
+                                        item: item,
+                                        isSelected: column.selectedItemID == item.id
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .draggable(item.url)
+                                .accessibilityLabel(item.name)
+                                .accessibilityValue(item.isFolder ? L10n.text("Folder") : item.kind)
+                                .simultaneousGesture(
+                                    TapGesture(count: 2).onEnded {
+                                        if !item.isFolder {
+                                            model.open(item)
+                                        }
                                     }
+                                )
+                                .contextMenu {
+                                    FileItemActionsMenu(
+                                        model: model,
+                                        slot: slot,
+                                        targets: [item],
+                                        requestTrash: requestTrash
+                                    )
                                 }
-                            )
-                            .contextMenu {
-                                Button("Open") { model.open(item) }
-                                Button("Quick Look") {
-                                    model.selection = [item.id]
-                                    model.previewSelection()
-                                }
-                                Button("Show in Finder") {
-                                    model.selection = [item.id]
-                                    model.revealSelectionInFinder()
-                                }
-                                Divider()
-                                TransferActionsMenu(model: model, slot: slot, item: item)
-                                Button("Rename…") { model.renameTarget = item }
-                                    .disabled(model.isPerformingOperation)
-                                Button("Move to Trash", role: .destructive) {
-                                    model.selection = [item.id]
-                                    model.trashSelection()
-                                }
-                                .disabled(model.isPerformingOperation)
                             }
                         }
+                        .padding(4)
                     }
-                    .padding(4)
+                    // Keep the keyboard selection visible while arrowing through long folders.
+                    .onChange(of: column.selectedItemID) { _, selectedID in
+                        guard let selectedID else { return }
+                        proxy.scrollTo(selectedID)
+                    }
                 }
             }
         }
@@ -879,7 +924,7 @@ private struct ColumnItemRow: View {
             Text(item.name)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if item.isDirectory {
+            if item.isFolder {
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.tertiary)
@@ -952,6 +997,7 @@ private struct FileListView: View {
     let compact: Bool
     @FocusState.Binding var isFocused: Bool
     let onGoUp: () -> Bool
+    let requestTrash: ([FileItem]) -> Void
 
     @AppStorage("rowDensity") private var rowDensity = "comfortable"
     @AppStorage("alternateRowBackgrounds") private var alternateRowBackgrounds = false
@@ -967,39 +1013,25 @@ private struct FileListView: View {
                             ? Color.secondary.opacity(0.045)
                             : Color.clear
                     )
-                    .onTapGesture(count: 2) {
-                        model.open(item)
-                    }
                     .draggable(item.url)
-                    .contextMenu {
-                        Button("Open") { model.open(item) }
-                        Button("Quick Look") {
-                            model.selection = [item.id]
-                            model.previewSelection()
-                        }
-                        Button("Show in Finder") {
-                            model.selection = [item.id]
-                            model.revealSelectionInFinder()
-                        }
-                        Divider()
-                        TransferActionsMenu(model: model, slot: slot, item: item)
-                        Button("Rename…") {
-                            model.renameTarget = item
-                        }
-                        .disabled(model.isPerformingOperation)
-                        Button("Move to Trash", role: .destructive) {
-                            model.selection = [item.id]
-                            model.trashSelection()
-                        }
-                        .disabled(model.isPerformingOperation)
-                    }
                     .simultaneousGesture(TapGesture().onEnded {
                         isFocused = true
                     })
             }
         }
+        // The selection-aware menu targets the whole selection when the clicked row is part of
+        // it, and opens the targets on double-click.
+        .contextMenu(forSelectionType: FileItem.ID.self) { ids in
+            let targets = model.items(for: ids)
+            if !targets.isEmpty {
+                FileItemActionsMenu(model: model, slot: slot, targets: targets, requestTrash: requestTrash)
+            }
+        } primaryAction: { ids in
+            model.open(model.items(for: ids))
+        }
         .listStyle(.inset)
         .focusable()
+        .focusEffectDisabled()
         .focused($isFocused)
         .onKeyPress(.rightArrow) {
             guard !model.isLoading, model.enterSelectedFolderFromKeyboard() else { return .ignored }
@@ -1009,14 +1041,40 @@ private struct FileListView: View {
             guard onGoUp() else { return .ignored }
             return .handled
         }
+        // Keyboard focus sits on this focusable container rather than the underlying table, so
+        // the menu's primary action never sees Return; open the visible selection here instead.
+        .onKeyPress(.return) {
+            let targets = model.selectedItems
+            guard !model.isLoading, !targets.isEmpty else { return .ignored }
+            model.open(targets)
+            return .handled
+        }
+    }
+}
+
+private struct FileItemActionsMenu: View {
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+    let targets: [FileItem]
+    let requestTrash: ([FileItem]) -> Void
+
+    var body: some View {
+        Button("Open") { model.open(targets) }
+        Button("Quick Look") { model.preview(targets) }
+        Button("Show in Finder") { model.reveal(targets) }
+        Divider()
+        TransferActionsMenu(slot: slot, urls: targets.map(\.url))
+        Button("Rename…") { model.renameTarget = targets.first }
+            .disabled(targets.count != 1 || model.isPerformingOperation)
+        Button("Move to Trash", role: .destructive) { requestTrash(targets) }
+            .disabled(model.isPerformingOperation)
     }
 }
 
 private struct TransferActionsMenu: View {
     @EnvironmentObject private var appModel: AppModel
-    @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
-    let item: FileItem
+    let urls: [URL]
 
     var body: some View {
         if !targets.isEmpty {
@@ -1041,13 +1099,6 @@ private struct TransferActionsMenu: View {
         appModel.paneLayout.visibleSlots.filter { $0 != slot }
     }
 
-    private var urls: [URL] {
-        if model.selection.contains(item.id) {
-            return model.selectedItems.map(\.url)
-        }
-        return [item.url]
-    }
-
     private func title(for target: PaneSlot) -> String {
         let index = PaneSlot.allCases.firstIndex(of: target) ?? 0
         return L10n.format("Pane %lld", Int64(index + 1))
@@ -1070,7 +1121,7 @@ private struct FileRow: View {
                 VStack(alignment: .leading, spacing: density == "compact" ? 0 : 2) {
                     Text(item.name)
                         .lineLimit(1)
-                    Text(item.isDirectory ? item.formattedDate : "\(item.kind)  ·  \(item.formattedSize)")
+                    Text(item.isFolder ? item.formattedDate : "\(item.kind)  ·  \(item.formattedSize)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1123,9 +1174,10 @@ private struct StatusBarView: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(L10n.format("%lld items", Int64(model.visibleItems.count)))
-            if !model.selection.isEmpty {
+            let selectedCount = model.selectedItems.count
+            if selectedCount > 0 {
                 Text("•")
-                Text(L10n.format("%lld selected", Int64(model.selection.count)))
+                Text(L10n.format("%lld selected", Int64(selectedCount)))
             }
 
             if let freeSpace = model.availableCapacity {

@@ -18,6 +18,9 @@ final class AppModel: ObservableObject {
     @Published var isShowingSettings = false
     @Published private(set) var locationEditRequest = 0
     @Published private(set) var searchFocusRequest = 0
+    /// Incremented only when the keyboard changes the active pane, so the new pane can take
+    /// keyboard focus without stealing it from a control the user clicked.
+    @Published private(set) var paneFocusRequest = 0
     @Published private(set) var transferQueue = FileTransferQueueModel()
 
     @Published private(set) var primaryPane: BrowserPaneModel
@@ -126,6 +129,7 @@ final class AppModel: ObservableObject {
         let slots = paneLayout.visibleSlots
         guard slots.count > 1, let index = slots.firstIndex(of: activePane) else { return }
         activePane = slots[(index + (backward ? slots.count - 1 : 1)) % slots.count]
+        paneFocusRequest += 1
     }
 
     func requestLocationEditing() {
@@ -147,6 +151,26 @@ final class AppModel: ObservableObject {
 
     func open(_ url: URL) {
         activePaneModel.navigate(to: url)
+    }
+
+    /// Opens a sidebar location in the active pane unless the pane already shows it.
+    func openSidebarLocation(_ location: SidebarLocation) {
+        guard activePaneModel.currentURL.standardizedFileURL != location.url.standardizedFileURL else { return }
+        open(location.url)
+    }
+
+    /// Keeps the sidebar highlight on the location the active pane shows. Clearing it after the
+    /// pane moves elsewhere lets a second click on the same location open it again.
+    func syncSidebarSelection(with locations: [SidebarLocation]) {
+        let currentDirectory = activePaneModel.currentURL.standardizedFileURL
+        if let selectedID = sidebarSelection,
+           locations.contains(where: { $0.id == selectedID && $0.url.standardizedFileURL == currentDirectory }) {
+            return
+        }
+        let matchingID = locations.first { $0.url.standardizedFileURL == currentDirectory }?.id
+        if sidebarSelection != matchingID {
+            sidebarSelection = matchingID
+        }
     }
 
     func requestNewFolder() {
@@ -203,7 +227,7 @@ final class AppModel: ObservableObject {
         transferQueue.enqueue(
             kind: kind,
             sources: urls,
-            destinationDirectory: pane(for: destinationSlot).currentURL
+            destinationDirectory: pane(for: destinationSlot).transferDestinationURL
         )
     }
 
