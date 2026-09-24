@@ -25,6 +25,8 @@ final class AppModel: ObservableObject {
     let workspaceShortcuts: WorkspaceShortcutsModel
     let operationHistory: OperationHistoryModel
     @Published var isShowingOperationHistory = false
+    @Published private(set) var isUndoing = false
+    private let undoService: OperationUndoService
 
     @Published private(set) var primaryPane: BrowserPaneModel
     @Published private(set) var secondaryPane: BrowserPaneModel
@@ -37,9 +39,11 @@ final class AppModel: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        operationHistory: OperationHistoryModel? = nil
+        operationHistory: OperationHistoryModel? = nil,
+        undoService: OperationUndoService = OperationUndoService()
     ) {
         self.defaults = defaults
+        self.undoService = undoService
         self.operationHistory = operationHistory ?? OperationHistoryModel()
         workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
         let fileManager = FileManager.default
@@ -256,6 +260,61 @@ final class AppModel: ObservableObject {
     func transferSelection(from sourceSlot: PaneSlot, to destinationSlot: PaneSlot, kind: FileTransferKind) {
         let urls = pane(for: sourceSlot).selectedItems.map(\.url)
         transfer(urls, from: sourceSlot, to: destinationSlot, kind: kind)
+    }
+
+    // MARK: Undo
+
+    /// The operation ⌘Z reverses: the newest one that has not been undone yet.
+    var latestUndoableOperation: OperationRecord? {
+        operationHistory.records.first { OperationUndoService.canUndo($0) }
+    }
+
+    func undoLatestOperation() {
+        guard let record = latestUndoableOperation else { return }
+        undo(record)
+    }
+
+    func undo(_ record: OperationRecord) {
+        guard !isUndoing, OperationUndoService.canUndo(record) else { return }
+        isUndoing = true
+        let reportingPane = activePaneModel
+        Task {
+            var updated = record
+            do {
+                let changed = try await undoService.undo(record)
+                updated.isUndone = true
+                if record.kind == .rename {
+                    for item in record.items {
+                        guard let result = item.result else { continue }
+                        for slot in PaneSlot.allCases {
+                            pane(for: slot).followRename(from: result, to: item.original)
+                        }
+                    }
+                }
+                refreshPanes(within: changed)
+            } catch let partial as PartialUndo {
+                updated.isUndone = true
+                refreshPanes(within: partial.changed)
+                reportingPane.operationErrorMessage = partial.localizedDescription
+            } catch {
+                reportingPane.operationErrorMessage = error.localizedDescription
+            }
+            operationHistory.update(updated)
+            isUndoing = false
+        }
+    }
+
+    /// Undo can bring back a folder a pane was showing as unavailable, so panes inside the
+    /// changed folders reload too, not only panes showing them.
+    private func refreshPanes(within directories: Set<URL>) {
+        let changed = directories.map(BrowserPaneModel.comparablePath)
+        for slot in paneLayout.visibleSlots {
+            let pane = pane(for: slot)
+            let path = BrowserPaneModel.comparablePath(pane.currentURL)
+            if changed.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
+                pane.refresh()
+            }
+        }
     }
 
     private func recordTransfer(_ job: FileTransferJob) {

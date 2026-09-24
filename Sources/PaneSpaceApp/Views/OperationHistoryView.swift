@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Current transfer jobs and the persistent history of finished operations.
 struct OperationHistoryView: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var queue: FileTransferQueueModel
     @ObservedObject var history: OperationHistoryModel
     @Environment(\.dismiss) private var dismiss
@@ -33,7 +34,10 @@ struct OperationHistoryView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(history.records) { record in
-                        OperationRecordRow(record: record)
+                        OperationRecordRow(record: record) {
+                            appModel.undo(record)
+                        }
+                        .disabled(appModel.isUndoing)
                     }
                 }
             }
@@ -87,6 +91,7 @@ struct TransferJobRow: View {
 
 private struct OperationRecordRow: View {
     let record: OperationRecord
+    let undo: () -> Void
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -117,8 +122,11 @@ private struct OperationRecordRow: View {
             Spacer()
             Text(L10n.text(record.outcome.title))
                 .foregroundStyle(record.outcome == .failed ? .red : .secondary)
+            if OperationUndoService.canUndo(record) {
+                Button("Undo", action: undo)
+                    .accessibilityLabel(Text(L10n.format("Undo %@", record.title)))
+            }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
