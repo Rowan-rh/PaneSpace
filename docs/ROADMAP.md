@@ -38,7 +38,7 @@ For a detailed inventory of unfinished and partially implemented features, inclu
 - [ ] Command palette and configurable keyboard shortcuts
 - [ ] Archive creation and extraction
 - [ ] Git status decorations
-- [ ] Batch rename
+- [x] Batch rename
 
 ## 0.4 — Remote providers
 
