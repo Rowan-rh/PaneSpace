@@ -102,6 +102,33 @@ final class LocalTransferServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "new")
     }
 
+    func testReadOnlyDestinationFailsBeforeStaging() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("Source", isDirectory: true)
+        let readOnly = root.appendingPathComponent("Locked Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: readOnly, withIntermediateDirectories: true)
+        let source = sourceDirectory.appendingPathComponent("note.txt")
+        try Data("note".utf8).write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: readOnly.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: readOnly.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let service = LocalTransferService()
+        do {
+            _ = try await service.transfer(source: source, to: readOnly, kind: .move, conflictDecision: nil)
+            XCTFail("Expected the read-only destination to be rejected")
+        } catch let LocalTransferError.destinationNotWritable(name) {
+            XCTAssertEqual(name, "Locked Folder")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: readOnly.path), [])
+    }
+
     func testFailureRemovesPartialStagingItem() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

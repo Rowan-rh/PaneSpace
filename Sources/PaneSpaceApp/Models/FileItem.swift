@@ -8,9 +8,31 @@ struct FileItem: Identifiable, Hashable, Sendable {
     let fileSize: Int64?
     let modificationDate: Date?
     let kind: String
+    let isPackage: Bool
+
+    init(
+        url: URL,
+        isDirectory: Bool,
+        isHidden: Bool,
+        fileSize: Int64?,
+        modificationDate: Date?,
+        kind: String,
+        isPackage: Bool = false
+    ) {
+        self.url = url
+        self.isDirectory = isDirectory
+        self.isHidden = isHidden
+        self.fileSize = fileSize
+        self.modificationDate = modificationDate
+        self.kind = kind
+        self.isPackage = isPackage
+    }
 
     var id: URL { url }
     var name: String { url.lastPathComponent }
+
+    /// Packages such as applications are directories on disk but behave as single files when browsing.
+    var isFolder: Bool { isDirectory && !isPackage }
 
     var formattedSize: String {
         guard !isDirectory, let fileSize else { return "—" }

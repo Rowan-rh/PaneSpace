@@ -58,7 +58,13 @@ make app
 open dist/PaneSpace.app
 ```
 
-The generated app is ad-hoc signed for local development. The current version relies on file access already granted to the process; security-scoped bookmark persistence required for sandboxed distribution is not implemented yet.
+Install it into the Applications folder:
+
+```bash
+make install
+```
+
+The generated app is ad-hoc signed for local development. If macOS says it cannot verify the developer the first time you open it, Control-click PaneSpace in Applications and choose Open. The current version relies on file access already granted to the process; security-scoped bookmark persistence required for sandboxed distribution is not implemented yet.
 
 ## Roadmap
 

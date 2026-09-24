@@ -57,6 +57,7 @@ enum PaneSpacePreferences {
         "betaUpdates",
         "diagnosticLogging",
         "appSession",
+        "workspaceShortcuts",
         "NSWindow Frame PaneSpace.MainWindow"
     ]
 

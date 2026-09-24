@@ -63,6 +63,7 @@ struct FileTransferConflict: Identifiable, Sendable {
 enum LocalTransferError: LocalizedError, Sendable {
     case invalidDestination
     case destinationExists
+    case destinationNotWritable(name: String)
     case sourceRemovalFailed(destination: URL, reason: String)
 
     var errorDescription: String? {
@@ -71,6 +72,8 @@ enum LocalTransferError: LocalizedError, Sendable {
             return L10n.text("The destination is inside the source or is the same folder.")
         case .destinationExists:
             return L10n.text("An item with that name already exists.")
+        case let .destinationNotWritable(name):
+            return L10n.format("You don’t have permission to write to “%@”.", name)
         case let .sourceRemovalFailed(_, reason):
             return L10n.format("The copy completed, but the source could not be moved to Trash: %@", reason)
         }

@@ -31,6 +31,12 @@ actor LocalTransferService {
            (destinationDirectory == actualSource || destinationDirectory.path.hasPrefix(actualSource.path + "/")) {
             throw LocalTransferError.invalidDestination
         }
+
+        // Fail before staging anything so the user sees which folder refused the write instead of
+        // the system's generic permission message.
+        guard fileManager.isWritableFile(atPath: destinationDirectory.path) else {
+            throw LocalTransferError.destinationNotWritable(name: destinationDirectory.lastPathComponent)
+        }
     }
 
     func destination(for source: URL, in directory: URL) -> URL {

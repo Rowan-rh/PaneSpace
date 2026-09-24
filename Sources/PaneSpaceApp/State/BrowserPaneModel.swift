@@ -7,15 +7,25 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     @Published var tabs: [BrowserTab]
     @Published var activeTabID: BrowserTab.ID
-    @Published var items: [FileItem] = []
+    @Published var items: [FileItem] = [] {
+        didSet { itemsRevision = UUID() }
+    }
     @Published var selection: Set<FileItem.ID> = []
-    @Published var searchText = ""
-    @Published var sort: FileSort = .name
-    @Published var sortAscending = true
+    @Published var searchText = "" {
+        didSet { displayCache.removeAll() }
+    }
+    @Published var sort: FileSort = .name {
+        didSet { displayCache.removeAll() }
+    }
+    @Published var sortAscending = true {
+        didSet { displayCache.removeAll() }
+    }
     @Published var showsHiddenFiles = false
     @Published var viewMode: BrowserViewMode
     @Published var columns: [BrowserColumn] = []
     @Published var isLoading = false
+    /// Shown only when a navigation load is slow, so quick loads and refreshes never flash.
+    @Published private(set) var showsLoadingIndicator = false
     @Published var errorMessage: String?
     @Published var operationErrorMessage: String?
     @Published var isPerformingOperation = false
@@ -28,10 +38,22 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var refreshTask: Task<Void, Never>?
     private var columnLoadTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
-    private let directoryObserver = LocalDirectoryObserver()
+    private var directoryObservers: [URL: LocalDirectoryObserver] = [:]
     private let pathResolver = LocalPathResolver()
-    private var observesCurrentDirectory = false
+    private var observesDirectories = false
+    private var hasPendingDirectoryLoad = false
     private var selectionURLToRestoreAfterRefresh: URL?
+    private var itemsRevision = UUID()
+    private var displayCache: [DisplayCacheKey: [FileItem]] = [:]
+    private var loadingIndicatorTask: Task<Void, Never>?
+    private var displayedDirectory: URL?
+
+    private struct DisplayCacheKey: Hashable {
+        let revision: UUID
+        let searchText: String
+        let sort: FileSort
+        let sortAscending: Bool
+    }
 
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -57,7 +79,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         self.showsHiddenFiles = session?.showsHiddenFiles ?? false
         self.sort = session?.sort ?? .name
         self.sortAscending = session?.sortAscending ?? true
-        refresh()
+        loadCurrentDirectory()
     }
 
     var session: BrowserPaneSession {
@@ -86,14 +108,46 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     var canGoForward: Bool { !activeTab.forwardHistory.isEmpty }
 
     var visibleItems: [FileItem] {
-        displayedItems(from: items)
+        cachedDisplayedItems(revision: itemsRevision, source: items)
     }
 
+    func displayedItems(in column: BrowserColumn) -> [FileItem] {
+        cachedDisplayedItems(revision: column.itemsRevision, source: column.items)
+    }
+
+    // Sorting large folders with localized comparison is expensive, and views read the display
+    // order on every render, so results are reused until the contents, search, or sort change.
+    private func cachedDisplayedItems(revision: UUID, source: [FileItem]) -> [FileItem] {
+        let key = DisplayCacheKey(
+            revision: revision,
+            searchText: searchText,
+            sort: sort,
+            sortAscending: sortAscending
+        )
+        if let cached = displayCache[key] {
+            return cached
+        }
+        let displayed = displayedItems(from: source)
+        if displayCache.count >= 64 {
+            displayCache.removeAll()
+        }
+        displayCache[key] = displayed
+        return displayed
+    }
+
+    /// The selected items that are currently visible, in display order. Items hidden by the
+    /// search filter stay selected but are excluded so actions never touch what the user cannot see.
     var selectedItems: [FileItem] {
-        let availableItems = viewMode == .columns ? columns.flatMap(\.items) : items
-        return Array(Dictionary(grouping: availableItems, by: \.id).compactMap { _, values in
-            values.first(where: { selection.contains($0.id) })
-        })
+        items(for: selection)
+    }
+
+    func items(for ids: Set<FileItem.ID>) -> [FileItem] {
+        guard !ids.isEmpty else { return [] }
+        let displayed = viewMode == .columns
+            ? columns.flatMap { displayedItems(in: $0) }
+            : visibleItems
+        var includedIDs: Set<FileItem.ID> = []
+        return displayed.filter { ids.contains($0.id) && includedIDs.insert($0.id).inserted }
     }
 
     func displayedItems(from source: [FileItem]) -> [FileItem] {
@@ -106,8 +160,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     private func sortedItems(_ source: [FileItem]) -> [FileItem] {
         source.sorted { lhs, rhs in
-            if lhs.isDirectory != rhs.isDirectory {
-                return lhs.isDirectory
+            if lhs.isFolder != rhs.isFolder {
+                return lhs.isFolder
             }
 
             let result: ComparisonResult
@@ -133,6 +187,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         } else if mode == .list {
             selection.formIntersection(Set(items.map(\.id)))
         }
+        syncDirectoryObservers()
     }
 
     func selectColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID) {
@@ -147,12 +202,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
         selection = [item.id]
 
-        guard item.isDirectory else {
+        guard item.isFolder else {
             let directory = columns[index].directory.standardizedFileURL
             updateActiveTabURL(directory)
             items = columns[index].items
             isLoading = false
+            hideLoadingIndicator()
             errorMessage = columns[index].errorMessage
+            syncDirectoryObservers()
             return
         }
 
@@ -168,6 +225,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             BrowserColumn(directory: item.url, items: [], selectedItemID: nil, isLoading: true, errorMessage: nil)
         )
         items = []
+        syncDirectoryObservers()
 
         let directory = item.url
         let showsHiddenFiles = showsHiddenFiles
@@ -203,7 +261,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         guard tabs.contains(where: { $0.id == id }) else { return }
         selectionURLToRestoreAfterRefresh = nil
         activeTabID = id
-        refresh()
+        loadCurrentDirectory()
     }
 
     func addTab(url: URL? = nil) {
@@ -211,7 +269,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let tab = BrowserTab(url: url ?? currentURL)
         tabs.append(tab)
         activeTabID = tab.id
-        refresh()
+        loadCurrentDirectory()
     }
 
     func closeTab(_ id: BrowserTab.ID) {
@@ -221,7 +279,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         if wasActive {
             selectionURLToRestoreAfterRefresh = nil
             activeTabID = tabs[min(index, tabs.count - 1)].id
-            refresh()
+            loadCurrentDirectory()
         }
     }
 
@@ -238,7 +296,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
         tab.url = url.standardizedFileURL
         activeTab = tab
-        refresh()
+        loadCurrentDirectory()
     }
 
     func navigateToEnteredLocation(_ input: String) async -> Bool {
@@ -273,7 +331,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         tab.forwardHistory.append(tab.url)
         tab.url = destination
         activeTab = tab
-        refresh()
+        loadCurrentDirectory()
     }
 
     func goForward() {
@@ -283,12 +341,17 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         tab.backHistory.append(tab.url)
         tab.url = destination
         activeTab = tab
-        refresh()
+        loadCurrentDirectory()
     }
 
     @discardableResult
     func goUp() -> Bool {
-        let departedDirectory = currentURL.standardizedFileURL
+        goUp(from: currentURL)
+    }
+
+    @discardableResult
+    func goUp(from directory: URL) -> Bool {
+        let departedDirectory = directory.standardizedFileURL
         let parent = departedDirectory.deletingLastPathComponent().standardizedFileURL
         guard parent.path != departedDirectory.path else { return false }
         navigate(to: parent, restoringSelectionAt: departedDirectory)
@@ -300,31 +363,132 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         guard selection.count == 1,
               let selectedID = selection.first,
               let item = visibleItems.first(where: { $0.id == selectedID }),
-              item.isDirectory else { return false }
+              item.isFolder else { return false }
         navigate(to: item.url)
         return true
     }
 
+    func moveColumnSelection(by offset: Int, in columnID: BrowserColumn.ID) -> Bool {
+        guard offset == -1 || offset == 1,
+              let columnIndex = columns.firstIndex(where: { $0.id == columnID }) else { return false }
+        let column = columns[columnIndex]
+        let visibleItems = displayedItems(in: column)
+        guard !column.isLoading, !visibleItems.isEmpty else { return false }
+
+        let selectedIndex = visibleItems.firstIndex { $0.id == column.selectedItemID }
+        let nextIndex: Int
+        if let selectedIndex {
+            nextIndex = min(max(selectedIndex + offset, 0), visibleItems.count - 1)
+            guard nextIndex != selectedIndex else { return true }
+        } else {
+            nextIndex = offset > 0 ? 0 : visibleItems.count - 1
+        }
+
+        selectColumnItem(visibleItems[nextIndex], in: columnID)
+        return true
+    }
+
+    func enterSelectedColumnFolderFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
+        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+              let selectedID = columns[columnIndex].selectedItemID,
+              let folder = displayedItems(in: columns[columnIndex])
+                .first(where: { $0.id == selectedID && $0.isFolder }) else { return nil }
+
+        let childDirectory = folder.url.standardizedFileURL
+        if let childColumn = columns.dropFirst(columnIndex + 1).first(where: {
+            $0.directory.standardizedFileURL == childDirectory
+        }) {
+            if !childColumn.isLoading,
+               let firstItem = displayedItems(in: childColumn).first {
+                selectColumnItem(firstItem, in: childColumn.id)
+            }
+            return childColumn.id
+        }
+
+        selectColumnItem(folder, in: columnID)
+        return childDirectory
+    }
+
+    func returnToPreviousColumnFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
+        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+              columnIndex > 0 else { return nil }
+
+        let parentColumn = columns[columnIndex - 1]
+        guard let selectedID = parentColumn.selectedItemID,
+              let parentFolder = parentColumn.items.first(where: {
+                  $0.id == selectedID && $0.isFolder
+              }),
+              parentFolder.url.standardizedFileURL == columns[columnIndex].directory.standardizedFileURL else {
+            return nil
+        }
+
+        // Like Finder, only move focus back one column: earlier columns and the current column
+        // stay visible, and nothing is reloaded.
+        selectionURLToRestoreAfterRefresh = nil
+        columnLoadTask?.cancel()
+        if columns.count > columnIndex + 1 {
+            columns.removeSubrange((columnIndex + 1)...)
+        }
+        columns[columnIndex].selectedItemID = nil
+        selection = [parentFolder.id]
+        updateActiveTabURL(parentFolder.url)
+        items = columns[columnIndex].items
+        errorMessage = columns[columnIndex].errorMessage
+        syncDirectoryObservers()
+        return parentColumn.id
+    }
+
+    /// Where items transferred into this pane land. In the column browser this is the folder the
+    /// visible selection lives in, not a folder that is merely selected but not opened.
+    var transferDestinationURL: URL {
+        guard viewMode == .columns, let lastColumn = columns.last else { return currentURL }
+        return columns.last(where: { $0.selectedItemID != nil })?.directory ?? lastColumn.directory
+    }
+
     func open(_ item: FileItem) {
-        if item.isDirectory {
+        if item.isFolder {
             navigate(to: item.url)
         } else {
             NSWorkspace.shared.open(item.url)
         }
     }
 
+    /// Opens several items at once. A pane can show only one folder, so folders are entered
+    /// only when a single folder is targeted; everything else goes to its default application.
+    func open(_ targets: [FileItem]) {
+        if targets.count == 1, let item = targets.first {
+            open(item)
+            return
+        }
+        for item in targets where !item.isFolder {
+            NSWorkspace.shared.open(item.url)
+        }
+    }
+
+    /// Reloads the visible contents. In the column browser this keeps the column path and
+    /// per-column selection; explicit navigation uses `loadCurrentDirectory()` instead.
     func refresh() {
+        let currentDirectory = currentURL.standardizedFileURL
+        guard viewMode == .columns,
+              !hasPendingDirectoryLoad,
+              columns.contains(where: { $0.directory.standardizedFileURL == currentDirectory }) else {
+            loadCurrentDirectory()
+            return
+        }
+        refreshColumnsInPlace()
+    }
+
+    private func loadCurrentDirectory() {
         let directory = currentURL
         let selectionURLToRestore = selectionURLToRestoreAfterRefresh
-        if observesCurrentDirectory {
-            directoryObserver.observe(directory) { [weak self] in self?.refresh() }
-        }
         let showsHiddenFiles = showsHiddenFiles
         let provider = provider
 
         refreshTask?.cancel()
         columnLoadTask?.cancel()
         isLoading = true
+        hasPendingDirectoryLoad = true
+        scheduleLoadingIndicator(unlessShowing: directory)
         refreshTask = Task {
             do {
                 let refreshedItems = try await provider.contents(
@@ -334,19 +498,21 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
                 guard !Task.isCancelled, currentURL == directory else { return }
                 items = refreshedItems
+                let restoredItem = selectionURLToRestore.flatMap { selectionURL in
+                    refreshedItems.first {
+                        $0.url.standardizedFileURL == selectionURL
+                    }
+                }
                 columns = [
                     BrowserColumn(
                         directory: directory,
                         items: refreshedItems,
-                        selectedItemID: nil,
+                        selectedItemID: viewMode == .columns ? restoredItem?.id : nil,
                         isLoading: false,
                         errorMessage: nil
                     )
                 ]
                 if let selectionURLToRestore {
-                    let restoredItem = refreshedItems.first {
-                        $0.url.standardizedFileURL == selectionURLToRestore
-                    }
                     selection = restoredItem.map { [$0.id] } ?? []
                     if selectionURLToRestoreAfterRefresh == selectionURLToRestore {
                         selectionURLToRestoreAfterRefresh = nil
@@ -355,10 +521,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                     selection = selection.intersection(Set(refreshedItems.map(\.id)))
                 }
                 isLoading = false
+                hasPendingDirectoryLoad = false
+                displayedDirectory = directory.standardizedFileURL
+                hideLoadingIndicator()
                 errorMessage = nil
-                let capacity = await provider.availableCapacity(for: directory)
-                guard !Task.isCancelled, currentURL == directory else { return }
-                availableCapacity = capacity
+                syncDirectoryObservers()
+                await updateAvailableCapacity(for: directory)
             } catch is CancellationError {
                 return
             } catch {
@@ -376,24 +544,146 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selection = []
                 selectionURLToRestoreAfterRefresh = nil
                 isLoading = false
+                hasPendingDirectoryLoad = false
+                displayedDirectory = directory.standardizedFileURL
+                hideLoadingIndicator()
                 errorMessage = error.localizedDescription
                 availableCapacity = nil
+                syncDirectoryObservers()
             }
         }
     }
 
-    func setDirectoryObservationEnabled(_ enabled: Bool) {
-        observesCurrentDirectory = enabled
-        if enabled {
-            directoryObserver.observe(currentURL) { [weak self] in self?.refresh() }
-        } else {
-            directoryObserver.stop()
+    private func scheduleLoadingIndicator(unlessShowing directory: URL) {
+        loadingIndicatorTask?.cancel()
+        // Reloading the folder already on screen keeps its contents visible instead.
+        guard displayedDirectory != directory.standardizedFileURL else { return }
+        loadingIndicatorTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self, self.isLoading else { return }
+            self.showsLoadingIndicator = true
         }
+    }
+
+    private func hideLoadingIndicator() {
+        loadingIndicatorTask?.cancel()
+        loadingIndicatorTask = nil
+        if showsLoadingIndicator {
+            showsLoadingIndicator = false
+        }
+    }
+
+    private func refreshColumnsInPlace() {
+        let snapshot = columns
+        let showsHiddenFiles = showsHiddenFiles
+        let provider = provider
+
+        refreshTask?.cancel()
+        columnLoadTask?.cancel()
+        refreshTask = Task {
+            var results: [Result<[FileItem], Error>] = []
+            for column in snapshot {
+                do {
+                    let columnItems = try await provider.contents(
+                        of: column.directory,
+                        showsHiddenFiles: showsHiddenFiles
+                    )
+                    results.append(.success(columnItems))
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Columns after an unreadable directory are dropped, so there is no need to read them.
+                    results.append(.failure(error))
+                    break
+                }
+            }
+            guard !Task.isCancelled, columns.map(\.id) == snapshot.map(\.id) else { return }
+            applyColumnRefresh(snapshot: snapshot, results: results)
+            await updateAvailableCapacity(for: currentURL)
+        }
+    }
+
+    private func applyColumnRefresh(snapshot: [BrowserColumn], results: [Result<[FileItem], Error>]) {
+        var refreshedColumns: [BrowserColumn] = []
+        for (index, result) in results.enumerated() {
+            var column = snapshot[index]
+            column.isLoading = false
+            switch result {
+            case let .failure(error):
+                column.items = []
+                column.selectedItemID = nil
+                column.errorMessage = error.localizedDescription
+                refreshedColumns.append(column)
+            case let .success(columnItems):
+                column.items = columnItems
+                column.errorMessage = nil
+                if let selectedID = column.selectedItemID,
+                   !columnItems.contains(where: { $0.id == selectedID }) {
+                    column.selectedItemID = nil
+                }
+                refreshedColumns.append(column)
+            }
+            guard index + 1 < snapshot.count,
+                  let selectedID = column.selectedItemID,
+                  let selectedItem = column.items.first(where: { $0.id == selectedID }),
+                  selectedItem.isFolder,
+                  selectedItem.url.standardizedFileURL == snapshot[index + 1].directory.standardizedFileURL else {
+                break
+            }
+        }
+
+        columns = refreshedColumns
+        let currentColumn = refreshedColumns.last(where: { $0.errorMessage == nil }) ?? refreshedColumns[0]
+        let currentDirectory = currentColumn.directory.standardizedFileURL
+        if activeTab.url.standardizedFileURL != currentDirectory {
+            // A refresh correcting the location for a removed folder is not user navigation, so
+            // it does not add a history entry.
+            var tab = activeTab
+            tab.url = currentDirectory
+            activeTab = tab
+        }
+        items = currentColumn.items
+        errorMessage = currentColumn.errorMessage
+        let availableIDs = Set(refreshedColumns.flatMap(\.items).map(\.id))
+        selection.formIntersection(availableIDs)
+        syncDirectoryObservers()
+    }
+
+    private func updateAvailableCapacity(for directory: URL) async {
+        let capacity = await provider.availableCapacity(for: directory)
+        guard !Task.isCancelled, currentURL == directory else { return }
+        availableCapacity = capacity
+    }
+
+    func setDirectoryObservationEnabled(_ enabled: Bool) {
+        observesDirectories = enabled
+        syncDirectoryObservers()
+    }
+
+    private func syncDirectoryObservers() {
+        let observedDirectories = directoriesToObserve
+        for (directory, observer) in directoryObservers where !observedDirectories.contains(directory) {
+            observer.stop()
+            directoryObservers[directory] = nil
+        }
+        for directory in observedDirectories where directoryObservers[directory] == nil {
+            let observer = LocalDirectoryObserver()
+            observer.observe(directory) { [weak self] in self?.refresh() }
+            directoryObservers[directory] = observer
+        }
+    }
+
+    private var directoriesToObserve: Set<URL> {
+        guard observesDirectories else { return [] }
+        if viewMode == .columns, !columns.isEmpty {
+            return Set(columns.map { $0.directory.standardizedFileURL })
+        }
+        return [currentURL.standardizedFileURL]
     }
 
     func toggleHiddenFiles() {
         showsHiddenFiles.toggle()
-        refresh()
+        loadCurrentDirectory()
     }
 
     func createFolder(named name: String) {
@@ -426,7 +716,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 guard !Task.isCancelled else { return }
                 finishOperation()
                 remapTabs(from: item.url, to: destination)
-                refresh()
+                loadCurrentDirectory()
                 selection = destination.deletingLastPathComponent().standardizedFileURL == currentURL.standardizedFileURL
                     ? [destination]
                     : []
@@ -439,9 +729,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func trashSelection() {
-        guard !isPerformingOperation else { return }
-        let items = selectedItems
-        guard !items.isEmpty else { return }
+        trash(selectedItems)
+    }
+
+    func trash(_ items: [FileItem]) {
+        guard !isPerformingOperation, !items.isEmpty else { return }
         let provider = provider
         beginOperation()
         operationTask = Task {
@@ -477,14 +769,20 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func previewSelection() {
-        let urls = selectedItems.map(\.url)
-        QuickLookCoordinator.shared.show(urls: urls)
+        preview(selectedItems)
+    }
+
+    func preview(_ targets: [FileItem]) {
+        QuickLookCoordinator.shared.show(urls: targets.map(\.url))
     }
 
     func revealSelectionInFinder() {
-        let urls = selectedItems.map(\.url)
-        guard !urls.isEmpty else { return }
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
+        reveal(selectedItems)
+    }
+
+    func reveal(_ targets: [FileItem]) {
+        guard !targets.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.url))
     }
 
     func setSort(_ newSort: FileSort) {
@@ -493,11 +791,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         } else {
             sort = newSort
             sortAscending = true
-        }
-        columns = columns.map { column in
-            var updatedColumn = column
-            updatedColumn.items = sortedItems(column.items)
-            return updatedColumn
         }
     }
 
