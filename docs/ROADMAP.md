@@ -25,7 +25,8 @@ For a detailed inventory of unfinished and partially implemented features, inclu
 - [x] Item progress, cancellation, retry, and session task list
 - [x] Name-conflict decisions: keep both, replace, skip, and apply to all
 - [x] Local file URL drag and drop into panes
-- [ ] Byte progress and persistent operation history
+- [x] Byte progress and cancellation of large items
+- [ ] Persistent operation history
 - [ ] Undo support where platform behavior permits
 - [ ] Large-directory loading without blocking the UI
 - [x] File-system observation and live refresh

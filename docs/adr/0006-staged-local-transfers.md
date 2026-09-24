@@ -1,6 +1,6 @@
 # ADR 0006: Stage local transfers before publishing destinations
 
-- Status: Accepted
+- Status: Accepted; copy mechanism amended by [ADR 0007](0007-copyfile-progress-and-cancellation.md)
 - Date: 2026-09-23
 
 ## Context

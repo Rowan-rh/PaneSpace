@@ -2,17 +2,19 @@ import Darwin
 import Foundation
 
 actor LocalTransferService {
+    typealias CopyItem = @Sendable (_ source: URL, _ destination: URL, _ progress: TransferByteCounter?) throws -> Void
+
     private let fileManager: FileManager
-    private let copyItem: @Sendable (URL, URL) throws -> Void
+    private let copyItem: CopyItem
     private let trashItem: @Sendable (URL) throws -> Void
 
     init(
         fileManager: FileManager = FileManager(),
-        copyItem: (@Sendable (URL, URL) throws -> Void)? = nil,
+        copyItem: CopyItem? = nil,
         trashItem: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
-        self.copyItem = copyItem ?? { try FileManager().copyItem(at: $0, to: $1) }
+        self.copyItem = copyItem ?? { try LocalFileCopier.copy(from: $0, to: $1, progress: $2) }
         self.trashItem = trashItem ?? { try FileManager().trashItem(at: $0, resultingItemURL: nil) }
     }
 
@@ -52,7 +54,8 @@ actor LocalTransferService {
         source: URL,
         to destinationDirectory: URL,
         kind: FileTransferKind,
-        conflictDecision: FileConflictDecision?
+        conflictDecision: FileConflictDecision?,
+        progress: TransferByteCounter? = nil
     ) throws -> URL? {
         try validate(source: source, destinationDirectory: destinationDirectory)
         try Task.checkCancellation()
@@ -81,7 +84,7 @@ actor LocalTransferService {
             }
         }
 
-        try copyItem(source, staging)
+        try copyItem(source, staging, progress)
         try Task.checkCancellation()
 
         if exists(at: target) {
@@ -103,6 +106,18 @@ actor LocalTransferService {
             }
         }
         return target
+    }
+
+    /// Total bytes a transfer of `source` copies. Unreadable items count as zero so progress
+    /// can still be shown for the rest of the job.
+    func byteCount(of source: URL) throws -> Int64 {
+        do {
+            return try LocalFileCopier.byteCount(of: source)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return 0
+        }
     }
 
     func removeSourceAfterCopy(_ source: URL) throws {

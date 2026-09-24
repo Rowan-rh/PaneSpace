@@ -349,3 +349,5 @@
 "The items could not be renamed, and their original names were restored: %@" = "无法重命名这些项目，已恢复原名称：%@";
 "The items could not be renamed, and %lld items kept temporary names: %@" = "无法重命名这些项目，%lld 个项目仍保留临时名称：%@";
 "Rename several selected items with a live preview." = "带实时预览地重命名多个选中项目。";
+"%@ of %@" = "%@ / %@";
+"Transfer progress" = "传输进度";
