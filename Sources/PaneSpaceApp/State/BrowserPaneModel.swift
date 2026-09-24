@@ -305,6 +305,64 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         return true
     }
 
+    func moveColumnSelection(by offset: Int, in columnID: BrowserColumn.ID) -> Bool {
+        guard offset == -1 || offset == 1,
+              let columnIndex = columns.firstIndex(where: { $0.id == columnID }) else { return false }
+        let column = columns[columnIndex]
+        let visibleItems = displayedItems(from: column.items)
+        guard !column.isLoading, !visibleItems.isEmpty else { return false }
+
+        let selectedIndex = visibleItems.firstIndex { $0.id == column.selectedItemID }
+        let nextIndex: Int
+        if let selectedIndex {
+            nextIndex = min(max(selectedIndex + offset, 0), visibleItems.count - 1)
+            guard nextIndex != selectedIndex else { return true }
+        } else {
+            nextIndex = offset > 0 ? 0 : visibleItems.count - 1
+        }
+
+        selectColumnItem(visibleItems[nextIndex], in: columnID)
+        return true
+    }
+
+    func enterSelectedColumnFolderFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
+        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+              let selectedID = columns[columnIndex].selectedItemID,
+              let folder = displayedItems(from: columns[columnIndex].items)
+                .first(where: { $0.id == selectedID && $0.isDirectory }) else { return nil }
+
+        let childDirectory = folder.url.standardizedFileURL
+        if let childColumn = columns.dropFirst(columnIndex + 1).first(where: {
+            $0.directory.standardizedFileURL == childDirectory
+        }) {
+            if !childColumn.isLoading,
+               let firstItem = displayedItems(from: childColumn.items).first {
+                selectColumnItem(firstItem, in: childColumn.id)
+            }
+            return childColumn.id
+        }
+
+        selectColumnItem(folder, in: columnID)
+        return childDirectory
+    }
+
+    func returnToPreviousColumnFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
+        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+              columnIndex > 0 else { return nil }
+
+        let parentColumn = columns[columnIndex - 1]
+        guard let selectedID = parentColumn.selectedItemID,
+              let parentFolder = parentColumn.items.first(where: {
+                  $0.id == selectedID && $0.isDirectory
+              }),
+              parentFolder.url.standardizedFileURL == columns[columnIndex].directory.standardizedFileURL else {
+            return nil
+        }
+
+        selectColumnItem(parentFolder, in: parentColumn.id)
+        return parentColumn.id
+    }
+
     func open(_ item: FileItem) {
         if item.isDirectory {
             navigate(to: item.url)
