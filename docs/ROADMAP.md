@@ -2,6 +2,8 @@
 
 The roadmap records intended sequencing, not a promise of delivery dates. Each milestone should leave the app usable and the file model internally coherent.
 
+For a detailed inventory of unfinished and partially implemented features, including planned settings, see [Missing Features](MISSING_FEATURES.md).
+
 ## 0.1 — Local browsing foundation
 
 - [x] Native macOS application shell
@@ -39,6 +41,8 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [ ] Batch rename
 
 ## 0.4 — Remote providers
+
+On hold until 0.2 and 0.3 are complete.
 
 - [ ] Async capability-oriented provider API
 - [ ] SFTP
