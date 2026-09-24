@@ -85,16 +85,26 @@ CI 不会启动应用，也不会执行桌面界面检查；改动界面的人�
 
 默认从仓库实际存在的 `develop` 分支建立聚焦分支，开发完成后保留合并提交合回 `develop`，推送后创建目标为 `main` 的合入请求。仓库目前没有名为 `developers` 的分支。项目维护者授权时可以直接操作 `main`，但必须保留提交/合并记录，不得强制推送，并用中文说明改动和验证结果。详细步骤见贡献指南。
 
-发布步骤：
+### 发布 macOS 下载包
 
-1. 运行完整测试和界面冒烟检查。
-2. 构建 Release 配置。
-3. 使用 Developer ID Application 证书签名。
-4. 提交 Apple 公证并 stapling 公证票据。
-5. 创建版本化 Git 标签和 GitHub Release。
-6. 发布校验和与发行说明。
+当前应用包构建脚本使用 ad-hoc 签名，不会生成 Developer ID 签名或 Apple 公证票据。公开预览版可以发布这种构建，但发行说明必须清楚标明它未经公证，并说明首次启动可能需要在 Finder 中 Control-点按应用并选择“打开”。不要将 ad-hoc 签名描述为可信开发者签名。
 
-在仓库密钥和发布政策获批前，不自动执行签名与公证。
+发布预览版时：
+
+1. 更新 `scripts/build-app.sh` 中的 `CFBundleShortVersionString` 和 `CFBundleVersion`，使其与发布版本一致；确认目标分支的 CI 通过，并按改动范围完成人工界面检查。
+2. 在目标 macOS 架构上运行 `make app`，并执行 `codesign --verify --deep --strict dist/PaneSpace.app`。
+3. 检查应用二进制架构，然后将 `.app` 打成 ZIP，并生成校验和：
+
+   ```bash
+   lipo -archs dist/PaneSpace.app/Contents/MacOS/PaneSpace
+   ditto -c -k --sequesterRsrc --keepParent dist/PaneSpace.app dist/PaneSpace-0.1.0-macos-arm64.zip
+   (cd dist && shasum -a 256 PaneSpace-0.1.0-macos-arm64.zip > PaneSpace-0.1.0-macos-arm64.sha256)
+   ```
+
+   文件名中的版本和架构必须与构建产物相符；不要将单架构构建标为通用版本。
+4. 将版本标签指向 `main` 上对应的提交，并在 GitHub Release 上传 ZIP 与 SHA-256 文件。发行说明应写明最低 macOS 版本、支持的架构、签名/公证状态和主要变化。
+
+正式稳定版应使用 Developer ID Application 证书签名，提交 Apple 公证并 staple 公证票据后再打包发布。仓库密钥和发布政策获批前，不要自动执行签名与公证。GitHub Actions 中名为 `PaneSpace-development` 的制品是 CI 开发包，不代替带版本号的 Release 下载包。
 
 ## 仓库分支规则
 
