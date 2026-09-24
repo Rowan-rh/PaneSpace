@@ -288,7 +288,12 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     @discardableResult
     func goUp() -> Bool {
-        let departedDirectory = currentURL.standardizedFileURL
+        goUp(from: currentURL)
+    }
+
+    @discardableResult
+    func goUp(from directory: URL) -> Bool {
+        let departedDirectory = directory.standardizedFileURL
         let parent = departedDirectory.deletingLastPathComponent().standardizedFileURL
         guard parent.path != departedDirectory.path else { return false }
         navigate(to: parent, restoringSelectionAt: departedDirectory)
@@ -359,7 +364,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             return nil
         }
 
-        selectColumnItem(parentFolder, in: parentColumn.id)
+        navigate(to: parentColumn.directory, restoringSelectionAt: columns[columnIndex].directory)
         return parentColumn.id
     }
 
@@ -392,19 +397,21 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
                 guard !Task.isCancelled, currentURL == directory else { return }
                 items = refreshedItems
+                let restoredItem = selectionURLToRestore.flatMap { selectionURL in
+                    refreshedItems.first {
+                        $0.url.standardizedFileURL == selectionURL
+                    }
+                }
                 columns = [
                     BrowserColumn(
                         directory: directory,
                         items: refreshedItems,
-                        selectedItemID: nil,
+                        selectedItemID: viewMode == .columns ? restoredItem?.id : nil,
                         isLoading: false,
                         errorMessage: nil
                     )
                 ]
                 if let selectionURLToRestore {
-                    let restoredItem = refreshedItems.first {
-                        $0.url.standardizedFileURL == selectionURLToRestore
-                    }
                     selection = restoredItem.map { [$0.id] } ?? []
                     if selectionURLToRestoreAfterRefresh == selectionURLToRestore {
                         selectionURLToRestoreAfterRefresh = nil

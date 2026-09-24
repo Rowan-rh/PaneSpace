@@ -92,6 +92,21 @@ final class BrowserPaneModelTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardParentNavigationFromFirstColumnRestoresFolderSelection() async throws {
+        let fixture = ColumnNavigationFixture()
+        let model = BrowserPaneModel(url: fixture.folder.url, provider: fixture.provider)
+        try await waitUntil { !model.isLoading }
+        model.setViewMode(.columns)
+
+        let firstColumn = try XCTUnwrap(model.columns.first)
+        XCTAssertTrue(model.goUp(from: firstColumn.directory))
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.root }
+
+        XCTAssertEqual(model.columns.first?.selectedItemID, fixture.folder.id)
+        XCTAssertEqual(model.selection, [fixture.folder.id])
+    }
+
+    @MainActor
     func testColumnSelectionLoadsTheNextDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -140,11 +155,14 @@ final class BrowserPaneModelTests: XCTestCase {
 
         XCTAssertEqual(model.enterSelectedColumnFolderFromKeyboard(in: folderColumn), emptyColumn)
         XCTAssertEqual(model.returnToPreviousColumnFromKeyboard(in: emptyColumn), folderColumn)
+        try await waitUntil { !model.isLoading && model.currentURL == fixture.folder.url }
+        XCTAssertEqual(model.columns.map(\.directory.standardizedFileURL), [fixture.folder.url.standardizedFileURL])
+        XCTAssertEqual(model.columns.first?.selectedItemID, fixture.subfolder.id)
         XCTAssertEqual(model.selection, [fixture.subfolder.id])
 
-        XCTAssertEqual(model.returnToPreviousColumnFromKeyboard(in: folderColumn), rootColumn)
-        try await waitUntil { model.columns.count == 2 && model.columns.last?.isLoading == false }
-        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.folder.url.standardizedFileURL)
+        XCTAssertTrue(model.goUp(from: folderColumn))
+        try await waitUntil { model.columns.count == 1 && !model.isLoading && model.currentURL == fixture.root }
+        XCTAssertEqual(model.currentURL.standardizedFileURL, fixture.root.standardizedFileURL)
         XCTAssertEqual(model.selection, [fixture.folder.id])
     }
 

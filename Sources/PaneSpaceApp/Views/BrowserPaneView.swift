@@ -155,16 +155,25 @@ struct BrowserPaneView: View {
                     .allowsHitTesting(false)
                 }
             }
-        } else if model.isLoading {
-            loadingIndicator
-        } else if let error = model.errorMessage {
-            ContentUnavailableView(
-                "Folder unavailable",
-                systemImage: "exclamationmark.folder",
-                description: Text(error)
-            )
         } else {
-            ColumnBrowserView(model: model, slot: slot)
+            // Keep the column browser mounted during refreshes so keyboard focus
+            // survives navigation to another directory.
+            ZStack {
+                ColumnBrowserView(model: model, slot: slot)
+                    .opacity(model.isLoading || model.errorMessage != nil ? 0 : 1)
+                    .allowsHitTesting(!model.isLoading && model.errorMessage == nil)
+
+                if model.isLoading {
+                    loadingIndicator
+                } else if let error = model.errorMessage {
+                    ContentUnavailableView(
+                        "Folder unavailable",
+                        systemImage: "exclamationmark.folder",
+                        description: Text(error)
+                    )
+                    .allowsHitTesting(false)
+                }
+            }
         }
     }
 
@@ -652,7 +661,8 @@ private struct ColumnBrowserView: View {
     @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
 
-    @FocusState private var focusedColumnID: BrowserColumn.ID?
+    @FocusState private var isColumnBrowserFocused: Bool
+    @State private var focusedColumnID: BrowserColumn.ID?
     @State private var pendingKeyboardEntryColumnID: BrowserColumn.ID?
 
     var body: some View {
@@ -664,7 +674,7 @@ private struct ColumnBrowserView: View {
                             model: model,
                             slot: slot,
                             column: column,
-                            focusedColumnID: $focusedColumnID,
+                            focusColumn: focusColumn,
                             pendingKeyboardEntryColumnID: $pendingKeyboardEntryColumnID
                         )
                             .frame(width: 250)
@@ -673,11 +683,48 @@ private struct ColumnBrowserView: View {
                     }
                 }
             }
+            .focusable()
+            .focused($isColumnBrowserFocused)
+            .onKeyPress(.upArrow) {
+                moveColumnSelection(by: -1)
+            }
+            .onKeyPress(.downArrow) {
+                moveColumnSelection(by: 1)
+            }
+            .onKeyPress(.rightArrow) {
+                guard !model.isLoading,
+                      let columnID = activeColumnID,
+                      let nextColumnID = model.enterSelectedColumnFolderFromKeyboard(in: columnID) else {
+                    return .ignored
+                }
+                focusedColumnID = nextColumnID
+                if model.columns.first(where: { $0.id == nextColumnID })?.isLoading == true {
+                    pendingKeyboardEntryColumnID = nextColumnID
+                }
+                return .handled
+            }
+            .onKeyPress(.leftArrow) {
+                guard !model.isLoading else { return .ignored }
+                pendingKeyboardEntryColumnID = nil
+                guard let columnID = activeColumnID,
+                      let column = model.columns.first(where: { $0.id == columnID }) else { return .ignored }
+                if let previousColumnID = model.returnToPreviousColumnFromKeyboard(in: columnID) {
+                    focusedColumnID = previousColumnID
+                    return .handled
+                }
+                guard model.columns.first?.id == columnID,
+                      model.goUp(from: column.directory) else { return .ignored }
+                return .handled
+            }
             .onChange(of: model.columns.count) {
                 guard let lastColumn = model.columns.last else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo(lastColumn.id, anchor: .trailing)
                 }
+            }
+            .onChange(of: model.columns.map(\.id)) { _, columnIDs in
+                if let focusedColumnID, columnIDs.contains(focusedColumnID) { return }
+                focusedColumnID = columnIDs.last
             }
             .onChange(of: model.columns.last?.id) { _, columnID in
                 guard let pendingKeyboardEntryColumnID,
@@ -692,9 +739,35 @@ private struct ColumnBrowserView: View {
                 self.pendingKeyboardEntryColumnID = nil
                 guard let firstItem = model.displayedItems(from: column.items).first else { return }
                 model.selectColumnItem(firstItem, in: column.id)
+                focusedColumnID = column.id
+            }
+            .onAppear {
+                if focusedColumnID == nil {
+                    focusedColumnID = model.columns.last?.id
+                }
             }
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+    }
+
+    private var activeColumnID: BrowserColumn.ID? {
+        guard let focusedColumnID,
+              model.columns.contains(where: { $0.id == focusedColumnID }) else {
+            return model.columns.last?.id
+        }
+        return focusedColumnID
+    }
+
+    private func focusColumn(_ columnID: BrowserColumn.ID) {
+        focusedColumnID = columnID
+        isColumnBrowserFocused = true
+    }
+
+    private func moveColumnSelection(by offset: Int) -> KeyPress.Result {
+        guard !model.isLoading,
+              let columnID = activeColumnID,
+              model.moveColumnSelection(by: offset, in: columnID) else { return .ignored }
+        return .handled
     }
 }
 
@@ -702,7 +775,7 @@ private struct ColumnView: View {
     @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
     let column: BrowserColumn
-    @FocusState.Binding var focusedColumnID: BrowserColumn.ID?
+    let focusColumn: (BrowserColumn.ID) -> Void
     @Binding var pendingKeyboardEntryColumnID: BrowserColumn.ID?
 
     var body: some View {
@@ -744,7 +817,7 @@ private struct ColumnView: View {
                             Button {
                                 pendingKeyboardEntryColumnID = nil
                                 model.selectColumnItem(item, in: column.id)
-                                focusedColumnID = column.id
+                                focusColumn(column.id)
                             } label: {
                                 ColumnItemRow(
                                     item: item,
@@ -790,37 +863,6 @@ private struct ColumnView: View {
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
-        .focusable()
-        .focused($focusedColumnID, equals: column.id)
-        .onKeyPress(.upArrow) {
-            moveColumnSelection(by: -1)
-        }
-        .onKeyPress(.downArrow) {
-            moveColumnSelection(by: 1)
-        }
-        .onKeyPress(.rightArrow) {
-            guard let nextColumnID = model.enterSelectedColumnFolderFromKeyboard(in: column.id) else {
-                return .ignored
-            }
-            focusedColumnID = nextColumnID
-            if model.columns.first(where: { $0.id == nextColumnID })?.isLoading == true {
-                pendingKeyboardEntryColumnID = nextColumnID
-            }
-            return .handled
-        }
-        .onKeyPress(.leftArrow) {
-            pendingKeyboardEntryColumnID = nil
-            guard let previousColumnID = model.returnToPreviousColumnFromKeyboard(in: column.id) else {
-                return .ignored
-            }
-            focusedColumnID = previousColumnID
-            return .handled
-        }
-    }
-
-    private func moveColumnSelection(by offset: Int) -> KeyPress.Result {
-        guard model.moveColumnSelection(by: offset, in: column.id) else { return .ignored }
-        return .handled
     }
 }
 
