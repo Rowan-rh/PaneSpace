@@ -128,6 +128,10 @@ struct ContentView: View {
             .padding(24)
             .frame(width: 360)
         }
+        .sheet(isPresented: $appModel.isShowingOperationHistory) {
+            OperationHistoryView(queue: appModel.transferQueue, history: appModel.operationHistory)
+                .environmentObject(appModel)
+        }
         .sheet(isPresented: $appModel.isShowingSettings) {
             SettingsView()
                 .environmentObject(appModel)

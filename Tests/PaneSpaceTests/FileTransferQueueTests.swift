@@ -19,7 +19,9 @@ final class FileTransferQueueTests: XCTestCase {
             try Data("old".utf8).write(to: destination.appendingPathComponent(name))
         }
         let service = LocalTransferService(trashItem: { url in
-            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+            let trashed = trash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
         })
         let queue = FileTransferQueueModel(service: service)
         queue.enqueue(kind: .copy, sources: names.map { source.appendingPathComponent($0) }, destinationDirectory: destination)
@@ -77,7 +79,9 @@ final class FileTransferQueueTests: XCTestCase {
         let attempts = AttemptCounter()
         let service = LocalTransferService(trashItem: { url in
             if attempts.shouldFail() { throw CocoaError(.fileWriteNoPermission) }
-            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+            let trashed = trash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
         })
         let queue = FileTransferQueueModel(service: service)
         queue.enqueue(kind: .move, sources: [source], destinationDirectory: destination)
@@ -92,6 +96,25 @@ final class FileTransferQueueTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["source.txt"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
         XCTAssertEqual(try String(contentsOf: trash.appendingPathComponent("source.txt"), encoding: .utf8), "content")
+    }
+
+    @MainActor
+    func testCompletedJobReportsAllMeasuredBytes() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let first = root.appendingPathComponent("first.bin")
+        let second = root.appendingPathComponent("second.bin")
+        try Data(count: 2_000).write(to: first)
+        try Data(count: 3_000).write(to: second)
+        let queue = FileTransferQueueModel()
+        queue.enqueue(kind: .copy, sources: [first, second], destinationDirectory: destination)
+
+        try await waitUntil { queue.jobs[0].state == .completed }
+        XCTAssertEqual(queue.jobs[0].totalBytes, 5_000)
+        XCTAssertEqual(queue.jobs[0].completedBytes, 5_000)
+        XCTAssertEqual(queue.jobs[0].fractionCompleted, 1)
     }
 
     private func makeRoot() throws -> URL {

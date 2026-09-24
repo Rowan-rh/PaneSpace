@@ -25,8 +25,12 @@ struct FileTransferItem: Identifiable, Sendable {
     let id: UUID
     let source: URL
     var destination: URL?
+    /// Measured before the job copies anything; nil until then.
+    var byteCount: Int64?
     var isComplete = false
     var needsSourceRemoval = false
+    var replacedItemInTrash: URL?
+    var sourceInTrash: URL?
     var errorMessage: String?
 
     init(source: URL) {
@@ -42,7 +46,18 @@ struct FileTransferJob: Identifiable, Sendable {
     var items: [FileTransferItem]
     var state: FileTransferState = .queued
     var completedCount = 0
+    /// Total bytes of all items; nil while the job has not been measured yet.
+    var totalBytes: Int64?
+    var completedBytes: Int64 = 0
     var errorMessage: String?
+
+    /// Fraction of bytes done, falling back to items for jobs made only of empty files.
+    var fractionCompleted: Double {
+        if let totalBytes, totalBytes > 0 {
+            return min(1, Double(completedBytes) / Double(totalBytes))
+        }
+        return items.isEmpty ? 0 : Double(completedCount) / Double(items.count)
+    }
 
     init(kind: FileTransferKind, sources: [URL], destinationDirectory: URL) {
         id = UUID()

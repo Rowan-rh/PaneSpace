@@ -108,6 +108,9 @@ struct BrowserPaneView: View {
         } message: { targets in
             Text(trashConfirmationMessage(for: targets))
         }
+        .sheet(item: $model.batchRenameRequest) { request in
+            BatchRenameView(model: model, request: request)
+        }
         .sheet(item: $model.renameTarget) { item in
             VStack(alignment: .leading, spacing: 16) {
                 Text("Rename \(item.name)")
@@ -718,11 +721,22 @@ private struct ColumnBrowserView: View {
             // The accent line above the active pane already shows where keyboard focus is.
             .focusEffectDisabled()
             .focused($isColumnBrowserFocused)
-            .onKeyPress(.upArrow) {
-                moveColumnSelection(by: -1)
+            .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                let direction: ItemSelection<FileItem.ID>.Direction = press.key == .upArrow ? .previous : .next
+                guard press.modifiers.contains(.shift) else {
+                    return moveColumnSelection(by: direction == .previous ? -1 : 1)
+                }
+                guard !model.isLoading,
+                      let columnID = activeColumnID,
+                      model.extendColumnSelection(direction, in: columnID) else { return .ignored }
+                return .handled
             }
-            .onKeyPress(.downArrow) {
-                moveColumnSelection(by: 1)
+            .onKeyPress(characters: CharacterSet(charactersIn: "aA")) { press in
+                guard press.modifiers == .command, !model.isLoading, let columnID = activeColumnID else {
+                    return .ignored
+                }
+                model.selectAllItems(inColumn: columnID)
+                return .handled
             }
             .onKeyPress(.rightArrow) {
                 guard !model.isLoading,
@@ -867,12 +881,12 @@ private struct ColumnView: View {
                             ForEach(displayedItems) { item in
                                 Button {
                                     pendingKeyboardEntryColumnID = nil
-                                    model.selectColumnItem(item, in: column.id)
+                                    model.clickColumnItem(item, in: column.id, modifier: currentSelectionModifier())
                                     focusColumn(column.id)
                                 } label: {
                                     ColumnItemRow(
                                         item: item,
-                                        isSelected: column.selectedItemID == item.id
+                                        isSelected: column.selectedItemID == item.id || model.selection.contains(item.id)
                                     )
                                     .contentShape(Rectangle())
                                 }
@@ -891,7 +905,7 @@ private struct ColumnView: View {
                                     FileItemActionsMenu(
                                         model: model,
                                         slot: slot,
-                                        targets: [item],
+                                        targets: model.selection.contains(item.id) ? model.selectedItems : [item],
                                         requestTrash: requestTrash
                                     )
                                 }
@@ -1003,6 +1017,26 @@ private struct FileListView: View {
     @AppStorage("alternateRowBackgrounds") private var alternateRowBackgrounds = false
 
     var body: some View {
+        ScrollViewReader { proxy in
+            list
+                .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                    guard !model.isLoading else { return .ignored }
+                    let direction: ItemSelection<FileItem.ID>.Direction = press.key == .upArrow ? .previous : .next
+                    guard let target = model.moveListSelection(direction, extending: press.modifiers.contains(.shift)) else {
+                        return .handled
+                    }
+                    proxy.scrollTo(target)
+                    return .handled
+                }
+                .onKeyPress(characters: CharacterSet(charactersIn: "aA")) { press in
+                    guard press.modifiers == .command, !model.isLoading else { return .ignored }
+                    model.selectAllVisibleItems()
+                    return .handled
+                }
+        }
+    }
+
+    private var list: some View {
         List(selection: $model.selection) {
             ForEach(Array(model.visibleItems.enumerated()), id: \.element.id) { index, item in
                 FileRow(item: item, compact: compact, density: rowDensity)
@@ -1052,6 +1086,15 @@ private struct FileListView: View {
     }
 }
 
+/// Reads the modifier keys of the click being handled, for controls that only report an action.
+@MainActor
+private func currentSelectionModifier() -> BrowserPaneModel.SelectionModifier {
+    let flags = NSApp.currentEvent?.modifierFlags ?? []
+    if flags.contains(.command) { return .toggle }
+    if flags.contains(.shift) { return .range }
+    return .none
+}
+
 private struct FileItemActionsMenu: View {
     @ObservedObject var model: BrowserPaneModel
     let slot: PaneSlot
@@ -1064,8 +1107,10 @@ private struct FileItemActionsMenu: View {
         Button("Show in Finder") { model.reveal(targets) }
         Divider()
         TransferActionsMenu(slot: slot, urls: targets.map(\.url))
-        Button("Rename…") { model.renameTarget = targets.first }
-            .disabled(targets.count != 1 || model.isPerformingOperation)
+        Button(targets.count > 1 ? L10n.format("Rename %lld Items…", Int64(targets.count)) : L10n.text("Rename…")) {
+            model.requestRename(targets)
+        }
+        .disabled(targets.isEmpty || model.isPerformingOperation)
         Button("Move to Trash", role: .destructive) { requestTrash(targets) }
             .disabled(model.isPerformingOperation)
     }
@@ -1178,6 +1223,13 @@ private struct StatusBarView: View {
             if selectedCount > 0 {
                 Text("•")
                 Text(L10n.format("%lld selected", Int64(selectedCount)))
+            }
+
+            if model.isLoadingMoreItems {
+                Text("•")
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Loading…")
             }
 
             if let freeSpace = model.availableCapacity {

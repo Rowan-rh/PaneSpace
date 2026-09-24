@@ -21,6 +21,7 @@ FileProviding protocol
     └── WebDAVProvider     planned
 
 AppModel ─── FileTransferQueueModel ─── LocalTransferService
+AppModel ─── OperationHistoryModel ─── OperationHistoryStore / OperationUndoService
 AppModel ─── WorkspaceShortcutsModel ─── UserDefaults / LocalPathResolver
 BrowserPaneModel ─── LocalDirectoryObserver / LocalPathResolver
 ```
@@ -48,7 +49,7 @@ The Settings scene uses `AppStorage` for lightweight user preferences. Options t
 
 ## Provider contract
 
-Provider primitives are asynchronous. The local provider is actor-isolated so directory reads and file mutations do not block the main actor. Providers normalize common failures such as permission denial, missing items, invalid names, and name conflicts before errors reach pane state. Future remote providers should add cancellation and expose capabilities such as rename, trash, server-side copy, and thumbnails.
+Provider primitives are asynchronous. The local provider is actor-isolated so directory reads and file mutations do not block the main actor. Folders are listed as a stream of batches, so a pane can show the first items of a large folder before the listing ends. Panes sort and filter every listing in a detached task before showing it ([ADR 0010](docs/adr/0010-incremental-directory-listing.md)). Providers normalize common failures such as permission denial, missing items, invalid names, and name conflicts before errors reach pane state. Future remote providers should add cancellation and expose capabilities such as rename, trash, server-side copy, and thumbnails.
 
 Each provider should eventually report:
 
@@ -61,7 +62,7 @@ Each provider should eventually report:
 
 ## File-operation engine
 
-Local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. `FileTransferQueueModel` runs local copy and move jobs serially, publishes item progress, cancellation, retry, and conflict decisions, and retains a session-only task list. `LocalTransferService` stages a complete copy in the destination directory before publishing it. Replace moves the old destination to Trash, and Move trashes the source only after the destination is complete. A failed source removal can be retried without copying again. Byte progress, persistent history, and remote transfers remain future work. The safety tradeoffs are recorded in [ADR 0006](docs/adr/0006-staged-local-transfers.md).
+Local create-folder, rename, and Trash primitives run asynchronously and expose busy and inline-error state. `FileTransferQueueModel` runs local copy and move jobs serially, publishes item and byte progress, cancellation, retry, and conflict decisions, and reports each finished run to `OperationHistoryModel`, which also records renames, Trash, and new folders and persists them as versioned JSON ([ADR 0008](docs/adr/0008-persistent-operation-history.md)). `OperationUndoService` reverses those records with recoverable steps only ([ADR 0009](docs/adr/0009-undo-with-recoverable-steps.md)). `LocalTransferService` stages a complete copy in the destination directory before publishing it, copying with `copyfile(3)` so bytes are reported and cancellation stops a file mid-copy ([ADR 0007](docs/adr/0007-copyfile-progress-and-cancellation.md)). Replace moves the old destination to Trash, and Move trashes the source only after the destination is complete. A failed source removal can be retried without copying again. Remote transfers remain future work. The safety tradeoffs are recorded in [ADR 0006](docs/adr/0006-staged-local-transfers.md).
 
 Visible local panes observe their current directory and coalesce file-system events before reloading. Completion of a transfer explicitly refreshes affected panes. `LocalPathResolver` validates typed paths outside the main actor; `BrowserPaneModel` changes history only after validation succeeds.
 

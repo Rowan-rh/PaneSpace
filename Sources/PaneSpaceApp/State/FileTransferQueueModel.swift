@@ -8,6 +8,9 @@ final class FileTransferQueueModel: ObservableObject {
 
     private let service: LocalTransferService
     var didCompleteItem: @MainActor (URL, URL) -> Void
+    /// Called once per run of a job that reached completed, failed, or cancelled. Items finished
+    /// by an earlier run are left out, so retries are not reported twice.
+    var didFinishJob: @MainActor (FileTransferJob) -> Void = { _ in }
     private var processingTask: Task<Void, Never>?
     private var pendingDecision: CheckedContinuation<FileConflictDecision?, Never>?
     private var decisionForRemainingConflicts: FileConflictDecision?
@@ -62,9 +65,15 @@ final class FileTransferQueueModel: ObservableObject {
         guard processingTask == nil,
               let index = jobs.firstIndex(where: { $0.state == .queued }) else { return }
         let jobID = jobs[index].id
+        let previouslyCompleted = Set(jobs[index].items.filter(\.isComplete).map(\.id))
         processingTask = Task { [weak self] in
             await self?.run(jobID)
             guard let self else { return }
+            if var finished = self.jobs.first(where: { $0.id == jobID }),
+               [.completed, .failed, .cancelled].contains(finished.state) {
+                finished.items.removeAll { previouslyCompleted.contains($0.id) }
+                self.didFinishJob(finished)
+            }
             self.processingTask = nil
             self.decisionForRemainingConflicts = nil
             self.startNextJob()
@@ -75,18 +84,31 @@ final class FileTransferQueueModel: ObservableObject {
         guard let jobIndex = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         jobs[jobIndex].state = .running
 
+        do {
+            try await measure(jobIndex: jobIndex)
+        } catch {
+            jobs[jobIndex].state = .cancelled
+            return
+        }
+
         for itemIndex in jobs[jobIndex].items.indices {
             if Task.isCancelled {
                 jobs[jobIndex].state = .cancelled
                 return
             }
             if jobs[jobIndex].items[itemIndex].isComplete { continue }
+            let finishedBytes = jobs[jobIndex].items.filter(\.isComplete).reduce(Int64(0)) { $0 + ($1.byteCount ?? 0) }
+            let itemBytes = jobs[jobIndex].items[itemIndex].byteCount ?? 0
+            jobs[jobIndex].completedBytes = finishedBytes
+            let counter = TransferByteCounter()
+            let progressTask = trackProgress(of: counter, jobID: jobID, finishedBytes: finishedBytes, itemBytes: itemBytes)
+            defer { progressTask.cancel() }
 
             let source = jobs[jobIndex].items[itemIndex].source
             let directory = jobs[jobIndex].destinationDirectory
             do {
                 if jobs[jobIndex].items[itemIndex].needsSourceRemoval {
-                    try await service.removeSourceAfterCopy(source)
+                    jobs[jobIndex].items[itemIndex].sourceInTrash = try await service.removeSourceAfterCopy(source)
                     jobs[jobIndex].items[itemIndex].needsSourceRemoval = false
                 } else {
                     try await service.validate(source: source, destinationDirectory: directory)
@@ -98,19 +120,24 @@ final class FileTransferQueueModel: ObservableObject {
                     } else {
                         decision = nil
                     }
-                    let destination = try await service.transfer(
+                    let outcome = try await service.transfer(
                         source: source,
                         to: directory,
                         kind: jobs[jobIndex].kind,
-                        conflictDecision: decision
+                        conflictDecision: decision,
+                        progress: counter
                     )
-                    jobs[jobIndex].items[itemIndex].destination = destination
-                    if destination != nil {
+                    jobs[jobIndex].items[itemIndex].destination = outcome?.destination
+                    jobs[jobIndex].items[itemIndex].replacedItemInTrash = outcome?.replacedItemInTrash
+                    jobs[jobIndex].items[itemIndex].sourceInTrash = outcome?.sourceInTrash
+                    if outcome != nil {
                         didCompleteItem(source.deletingLastPathComponent(), directory)
                     }
                 }
+                progressTask.cancel()
                 jobs[jobIndex].items[itemIndex].isComplete = true
                 jobs[jobIndex].completedCount += 1
+                jobs[jobIndex].completedBytes = finishedBytes + itemBytes
             } catch is CancellationError {
                 jobs[jobIndex].state = .cancelled
                 return
@@ -129,6 +156,40 @@ final class FileTransferQueueModel: ObservableObject {
         }
 
         jobs[jobIndex].state = .completed
+    }
+
+    /// Sizes every item once per job so retries keep the same total.
+    private func measure(jobIndex: Int) async throws {
+        guard jobs[jobIndex].totalBytes == nil else { return }
+        var total: Int64 = 0
+        for itemIndex in jobs[jobIndex].items.indices {
+            try Task.checkCancellation()
+            let size = try await service.byteCount(of: jobs[jobIndex].items[itemIndex].source)
+            jobs[jobIndex].items[itemIndex].byteCount = size
+            total += size
+        }
+        jobs[jobIndex].totalBytes = total
+    }
+
+    /// Copies report progress from the transfer actor; the queue samples it a few times a second
+    /// instead of publishing every callback to the main actor.
+    private func trackProgress(
+        of counter: TransferByteCounter,
+        jobID: UUID,
+        finishedBytes: Int64,
+        itemBytes: Int64
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, let self,
+                      let index = self.jobs.firstIndex(where: { $0.id == jobID }) else { return }
+                let bytes = finishedBytes + min(counter.value, itemBytes)
+                if self.jobs[index].completedBytes != bytes {
+                    self.jobs[index].completedBytes = bytes
+                }
+            }
+        }
     }
 
     private func requestDecision(jobID: UUID, source: URL, destination: URL) async -> FileConflictDecision? {

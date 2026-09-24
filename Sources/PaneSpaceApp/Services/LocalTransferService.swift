@@ -2,18 +2,24 @@ import Darwin
 import Foundation
 
 actor LocalTransferService {
+    typealias CopyItem = @Sendable (_ source: URL, _ destination: URL, _ progress: TransferByteCounter?) throws -> Void
+
     private let fileManager: FileManager
-    private let copyItem: @Sendable (URL, URL) throws -> Void
-    private let trashItem: @Sendable (URL) throws -> Void
+    private let copyItem: CopyItem
+    private let trashItem: @Sendable (URL) throws -> URL?
 
     init(
         fileManager: FileManager = FileManager(),
-        copyItem: (@Sendable (URL, URL) throws -> Void)? = nil,
-        trashItem: (@Sendable (URL) throws -> Void)? = nil
+        copyItem: CopyItem? = nil,
+        trashItem: (@Sendable (URL) throws -> URL?)? = nil
     ) {
         self.fileManager = fileManager
-        self.copyItem = copyItem ?? { try FileManager().copyItem(at: $0, to: $1) }
-        self.trashItem = trashItem ?? { try FileManager().trashItem(at: $0, resultingItemURL: nil) }
+        self.copyItem = copyItem ?? { try LocalFileCopier.copy(from: $0, to: $1, progress: $2) }
+        self.trashItem = trashItem ?? { url in
+            var resultingURL: NSURL?
+            try FileManager().trashItem(at: url, resultingItemURL: &resultingURL)
+            return resultingURL as URL?
+        }
     }
 
     func validate(source: URL, destinationDirectory: URL) throws {
@@ -52,8 +58,9 @@ actor LocalTransferService {
         source: URL,
         to destinationDirectory: URL,
         kind: FileTransferKind,
-        conflictDecision: FileConflictDecision?
-    ) throws -> URL? {
+        conflictDecision: FileConflictDecision?,
+        progress: TransferByteCounter? = nil
+    ) throws -> LocalTransferOutcome? {
         try validate(source: source, destinationDirectory: destinationDirectory)
         try Task.checkCancellation()
 
@@ -81,20 +88,22 @@ actor LocalTransferService {
             }
         }
 
-        try copyItem(source, staging)
+        try copyItem(source, staging, progress)
         try Task.checkCancellation()
 
+        var replacedItemInTrash: URL?
         if exists(at: target) {
             guard conflictDecision == .replace else {
                 throw LocalTransferError.destinationExists
             }
-            try trashItem(target)
+            replacedItemInTrash = try trashItem(target)
         }
         try fileManager.moveItem(at: staging, to: target)
 
+        var sourceInTrash: URL?
         if kind == .move {
             do {
-                try trashItem(source)
+                sourceInTrash = try trashItem(source)
             } catch {
                 throw LocalTransferError.sourceRemovalFailed(
                     destination: target,
@@ -102,10 +111,27 @@ actor LocalTransferService {
                 )
             }
         }
-        return target
+        return LocalTransferOutcome(
+            destination: target,
+            replacedItemInTrash: replacedItemInTrash,
+            sourceInTrash: sourceInTrash
+        )
     }
 
-    func removeSourceAfterCopy(_ source: URL) throws {
+    /// Total bytes a transfer of `source` copies. Unreadable items count as zero so progress
+    /// can still be shown for the rest of the job.
+    func byteCount(of source: URL) throws -> Int64 {
+        do {
+            return try LocalFileCopier.byteCount(of: source)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return 0
+        }
+    }
+
+    @discardableResult
+    func removeSourceAfterCopy(_ source: URL) throws -> URL? {
         try trashItem(source)
     }
 
@@ -129,4 +155,13 @@ actor LocalTransferService {
         defer { free(resolvedPath) }
         return URL(fileURLWithPath: String(cString: resolvedPath))
     }
+}
+
+/// Where a transferred item ended up, and where anything it displaced went.
+struct LocalTransferOutcome: Sendable {
+    let destination: URL
+    /// The existing destination item that Replace moved to the Trash.
+    let replacedItemInTrash: URL?
+    /// For moves, the source item after it was moved to the Trash.
+    let sourceInTrash: URL?
 }

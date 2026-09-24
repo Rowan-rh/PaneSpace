@@ -38,6 +38,38 @@ struct PaneSpaceApp: App {
                 }
                 .disabled(appModel.activePaneModel.isPerformingOperation)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+
+                Button("Rename…") {
+                    appModel.activePaneModel.requestRename(appModel.activePaneModel.selectedItems)
+                }
+                .disabled(
+                    appModel.activePaneModel.selectedItems.isEmpty ||
+                        appModel.activePaneModel.isPerformingOperation
+                )
+            }
+
+            CommandGroup(replacing: .undoRedo) {
+                Button {
+                    // Text fields keep their own undo; file operations are undone elsewhere.
+                    if NSApp.keyWindow?.firstResponder is NSText {
+                        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                    } else {
+                        appModel.undoLatestOperation()
+                    }
+                } label: {
+                    if let record = appModel.latestUndoableOperation {
+                        Text(L10n.format("Undo %@", record.title))
+                    } else {
+                        Text("Undo")
+                    }
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(appModel.isUndoing)
+
+                Button("Redo") {
+                    NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
 
             CommandGroup(replacing: .saveItem) {
@@ -102,6 +134,13 @@ struct PaneSpaceApp: App {
                 }
                 .disabled(!appModel.canTransferSelection)
                 .keyboardShortcut("m", modifiers: [.command, .control])
+
+                Divider()
+
+                Button("Operation History…") {
+                    appModel.isShowingOperationHistory = true
+                }
+                .keyboardShortcut("h", modifiers: [.command, .control])
             }
 
             CommandGroup(replacing: .appSettings) {

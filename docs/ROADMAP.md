@@ -2,6 +2,8 @@
 
 The roadmap records intended sequencing, not a promise of delivery dates. Each milestone should leave the app usable and the file model internally coherent.
 
+For a detailed inventory of unfinished and partially implemented features, including planned settings, see [Missing Features](MISSING_FEATURES.md).
+
 ## 0.1 — Local browsing foundation
 
 - [x] Native macOS application shell
@@ -23,9 +25,10 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [x] Item progress, cancellation, retry, and session task list
 - [x] Name-conflict decisions: keep both, replace, skip, and apply to all
 - [x] Local file URL drag and drop into panes
-- [ ] Byte progress and persistent operation history
-- [ ] Undo support where platform behavior permits
-- [ ] Large-directory loading without blocking the UI
+- [x] Byte progress and cancellation of large items
+- [x] Persistent operation history
+- [x] Undo support where platform behavior permits
+- [x] Large-directory loading without blocking the UI
 - [x] File-system observation and live refresh
 
 ## 0.3 — Views and workflows
@@ -36,9 +39,11 @@ The roadmap records intended sequencing, not a promise of delivery dates. Each m
 - [ ] Command palette and configurable keyboard shortcuts
 - [ ] Archive creation and extraction
 - [ ] Git status decorations
-- [ ] Batch rename
+- [x] Batch rename
 
 ## 0.4 — Remote providers
+
+On hold until 0.2 and 0.3 are complete.
 
 - [ ] Async capability-oriented provider API
 - [ ] SFTP

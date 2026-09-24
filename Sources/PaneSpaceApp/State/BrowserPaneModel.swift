@@ -26,13 +26,19 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     @Published var isLoading = false
     /// Shown only when a navigation load is slow, so quick loads and refreshes never flash.
     @Published private(set) var showsLoadingIndicator = false
+    /// True while a folder's first batches are shown but the rest is still being read.
+    @Published private(set) var isLoadingMoreItems = false
     @Published var errorMessage: String?
     @Published var operationErrorMessage: String?
     @Published var isPerformingOperation = false
     @Published var availableCapacity: Int64?
     @Published var renameTarget: FileItem?
+    @Published var batchRenameRequest: BatchRenameRequest?
     @Published private(set) var locationErrorMessage: String?
     @Published private(set) var isResolvingLocation = false
+
+    /// Receives finished file operations for the history.
+    var didRecordOperation: @MainActor (OperationRecord) -> Void = { _ in }
 
     private let provider: FileProviding
     private var refreshTask: Task<Void, Never>?
@@ -47,6 +53,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var displayCache: [DisplayCacheKey: [FileItem]] = [:]
     private var loadingIndicatorTask: Task<Void, Never>?
     private var displayedDirectory: URL?
+    /// Anchor and cursor for Shift ranges and keyboard extension; `selection` stays the source of truth.
+    private var selectionState = ItemSelection<FileItem.ID>()
 
     private struct DisplayCacheKey: Hashable {
         let revision: UUID
@@ -151,32 +159,54 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func displayedItems(from source: [FileItem]) -> [FileItem] {
+        Self.displayedItems(from: source, searchText: searchText, sort: sort, ascending: sortAscending)
+    }
+
+    nonisolated static func displayedItems(
+        from source: [FileItem],
+        searchText: String,
+        sort: FileSort,
+        ascending: Bool
+    ) -> [FileItem] {
         let filtered = searchText.isEmpty
             ? source
             : source.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-
-        return sortedItems(filtered)
+        return FileItemSorter.sorted(filtered, by: sort, ascending: ascending)
     }
 
-    private func sortedItems(_ source: [FileItem]) -> [FileItem] {
-        source.sorted { lhs, rhs in
-            if lhs.isFolder != rhs.isFolder {
-                return lhs.isFolder
-            }
+    /// Sorts off the main actor and stores the result where the views will look for it, so a
+    /// large folder is never sorted while the user waits on the main thread.
+    private func prepareDisplay(of source: [FileItem]) async -> DisplayPreparation {
+        let searchText = searchText
+        let sort = sort
+        let ascending = sortAscending
+        let displayed = await Task.detached(priority: .userInitiated) {
+            Self.displayedItems(from: source, searchText: searchText, sort: sort, ascending: ascending)
+        }.value
+        return DisplayPreparation(searchText: searchText, sort: sort, ascending: ascending, displayed: displayed)
+    }
 
-            let result: ComparisonResult
-            switch sort {
-            case .name:
-                result = lhs.name.localizedStandardCompare(rhs.name)
-            case .date:
-                result = compare(lhs.modificationDate, rhs.modificationDate)
-            case .size:
-                result = compare(lhs.fileSize, rhs.fileSize)
-            case .kind:
-                result = lhs.kind.localizedStandardCompare(rhs.kind)
-            }
-            return sortAscending ? result == .orderedAscending : result == .orderedDescending
+    private struct DisplayPreparation {
+        let searchText: String
+        let sort: FileSort
+        let ascending: Bool
+        let displayed: [FileItem]
+    }
+
+    /// Seeds the display cache for a revision if the view settings did not change meanwhile.
+    private func adopt(_ preparation: DisplayPreparation, forRevision revision: UUID) {
+        guard preparation.searchText == searchText,
+              preparation.sort == sort,
+              preparation.ascending == sortAscending else { return }
+        if displayCache.count >= 64 {
+            displayCache.removeAll()
         }
+        displayCache[DisplayCacheKey(
+            revision: revision,
+            searchText: searchText,
+            sort: sort,
+            sortAscending: sortAscending
+        )] = preparation.displayed
     }
 
     func setViewMode(_ mode: BrowserViewMode) {
@@ -201,6 +231,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             columns.removeSubrange((index + 1)...)
         }
         selection = [item.id]
+        selectionState.select(item.id)
 
         guard item.isFolder else {
             let directory = columns[index].directory.standardizedFileURL
@@ -389,7 +420,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func enterSelectedColumnFolderFromKeyboard(in columnID: BrowserColumn.ID) -> BrowserColumn.ID? {
-        guard let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
+        guard selection.count <= 1,
+              let columnIndex = columns.firstIndex(where: { $0.id == columnID }),
               let selectedID = columns[columnIndex].selectedItemID,
               let folder = displayedItems(in: columns[columnIndex])
                 .first(where: { $0.id == selectedID && $0.isFolder }) else { return nil }
@@ -438,6 +470,117 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         return parentColumn.id
     }
 
+    // MARK: Multiple selection
+
+    enum SelectionModifier {
+        case none
+        /// Command-click: add or remove one item.
+        case toggle
+        /// Shift-click: select the range from the anchor.
+        case range
+    }
+
+    /// Moves the list selection with the arrow keys. Returns the item to scroll into view.
+    @discardableResult
+    func moveListSelection(_ direction: ItemSelection<FileItem.ID>.Direction, extending: Bool) -> FileItem.ID? {
+        let order = visibleItems.map(\.id)
+        selectionState.adopt(selection)
+        let target = selectionState.move(direction, extending: extending, in: order)
+        applyListSelection()
+        return target
+    }
+
+    func selectAllVisibleItems() {
+        guard viewMode == .list else { return }
+        selectionState.adopt(selection)
+        selectionState.selectAll(in: visibleItems.map(\.id))
+        applyListSelection()
+    }
+
+    private func applyListSelection() {
+        if selection != selectionState.selected {
+            selection = selectionState.selected
+        }
+    }
+
+    /// Column-browser click. Command and Shift extend the selection within the column that holds
+    /// the current selection; anywhere else they behave like a plain click, as in Finder.
+    func clickColumnItem(_ item: FileItem, in columnID: BrowserColumn.ID, modifier: SelectionModifier) {
+        guard modifier != .none,
+              let index = columns.firstIndex(where: { $0.id == columnID }),
+              index == selectionColumnIndex else {
+            selectColumnItem(item, in: columnID)
+            return
+        }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        selectionState.adopt(selection)
+        switch modifier {
+        case .toggle:
+            selectionState.toggle(item.id, in: order)
+        case .range:
+            selectionState.extend(to: item.id, in: order)
+        case .none:
+            break
+        }
+        applyColumnSelection(at: index)
+    }
+
+    /// Shift-arrow in the column browser. Returns false when the column cannot take the key.
+    func extendColumnSelection(_ direction: ItemSelection<FileItem.ID>.Direction, in columnID: BrowserColumn.ID) -> Bool {
+        guard let index = columns.firstIndex(where: { $0.id == columnID }), !columns[index].isLoading else { return false }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        guard !order.isEmpty else { return false }
+        selectionState.adopt(index == selectionColumnIndex ? selection : [])
+        selectionState.move(direction, extending: true, in: order)
+        applyColumnSelection(at: index)
+        return true
+    }
+
+    func selectAllItems(inColumn columnID: BrowserColumn.ID) {
+        guard let index = columns.firstIndex(where: { $0.id == columnID }), !columns[index].isLoading else { return }
+        let order = displayedItems(in: columns[index]).map(\.id)
+        guard !order.isEmpty else { return }
+        selectionState.adopt(index == selectionColumnIndex ? selection : [])
+        selectionState.selectAll(in: order)
+        applyColumnSelection(at: index)
+    }
+
+    /// The column whose items make up `selection`: the deepest column with a selected item, or the
+    /// column holding a selection carried over from the list view.
+    private var selectionColumnIndex: Int? {
+        if let index = columns.lastIndex(where: { $0.selectedItemID != nil }) { return index }
+        guard !selection.isEmpty else { return nil }
+        return columns.firstIndex { column in column.items.contains { selection.contains($0.id) } }
+    }
+
+    private func applyColumnSelection(at index: Int) {
+        let selected = selectionState.selected
+        let column = columns[index]
+        // A single folder shows its contents again, exactly like a plain click.
+        if selected.count == 1, let only = selected.first,
+           let item = column.items.first(where: { $0.id == only }) {
+            let anchor = selectionState
+            selectColumnItem(item, in: column.id)
+            selectionState = anchor
+            return
+        }
+
+        selectionURLToRestoreAfterRefresh = nil
+        refreshTask?.cancel()
+        columnLoadTask?.cancel()
+        if columns.count > index + 1 {
+            columns.removeSubrange((index + 1)...)
+        }
+        columns[index].selectedItemID = selectionState.cursor ?? column.items.first { selected.contains($0.id) }?.id
+        selection = selected
+        updateActiveTabURL(column.directory)
+        items = columns[index].items
+        isLoading = false
+        hideLoadingIndicator()
+        errorMessage = columns[index].errorMessage
+        syncDirectoryObservers()
+    }
+
     /// Where items transferred into this pane land. In the column browser this is the folder the
     /// visible selection lives in, not a folder that is merely selected but not opened.
     var transferDestinationURL: URL {
@@ -483,21 +626,36 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         let selectionURLToRestore = selectionURLToRestoreAfterRefresh
         let showsHiddenFiles = showsHiddenFiles
         let provider = provider
+        // Reloading the folder on screen waits for the complete listing so rows do not vanish
+        // and reappear; a newly opened folder shows its first batch as soon as it is read.
+        let showsPartialResults = displayedDirectory != directory.standardizedFileURL
 
         refreshTask?.cancel()
         columnLoadTask?.cancel()
         isLoading = true
+        isLoadingMoreItems = false
         hasPendingDirectoryLoad = true
         scheduleLoadingIndicator(unlessShowing: directory)
         refreshTask = Task {
             do {
-                let refreshedItems = try await provider.contents(
-                    of: directory,
-                    showsHiddenFiles: showsHiddenFiles
-                )
-
+                var loaded: [FileItem] = []
+                var lastPublished: ContinuousClock.Instant?
+                for try await batch in provider.contentBatches(of: directory, showsHiddenFiles: showsHiddenFiles) {
+                    guard !Task.isCancelled, currentURL == directory else { return }
+                    loaded.append(contentsOf: batch)
+                    guard showsPartialResults,
+                          lastPublished.map({ ContinuousClock.now - $0 > .milliseconds(250) }) ?? true else { continue }
+                    let preparation = await prepareDisplay(of: loaded)
+                    guard !Task.isCancelled, currentURL == directory else { return }
+                    publishPartialContents(loaded, of: directory, preparation: preparation)
+                    lastPublished = .now
+                }
                 guard !Task.isCancelled, currentURL == directory else { return }
+                let preparation = await prepareDisplay(of: loaded)
+                guard !Task.isCancelled, currentURL == directory else { return }
+                let refreshedItems = loaded
                 items = refreshedItems
+                adopt(preparation, forRevision: itemsRevision)
                 let restoredItem = selectionURLToRestore.flatMap { selectionURL in
                     refreshedItems.first {
                         $0.url.standardizedFileURL == selectionURL
@@ -512,15 +670,17 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                         errorMessage: nil
                     )
                 ]
+                adopt(preparation, forRevision: columns[0].itemsRevision)
                 if let selectionURLToRestore {
                     selection = restoredItem.map { [$0.id] } ?? []
                     if selectionURLToRestoreAfterRefresh == selectionURLToRestore {
                         selectionURLToRestoreAfterRefresh = nil
                     }
                 } else {
-                    selection = selection.intersection(Set(refreshedItems.map(\.id)))
+                    selection = Self.retainedSelection(selection, in: refreshedItems)
                 }
                 isLoading = false
+                isLoadingMoreItems = false
                 hasPendingDirectoryLoad = false
                 displayedDirectory = directory.standardizedFileURL
                 hideLoadingIndicator()
@@ -544,6 +704,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 selection = []
                 selectionURLToRestoreAfterRefresh = nil
                 isLoading = false
+                isLoadingMoreItems = false
                 hasPendingDirectoryLoad = false
                 displayedDirectory = directory.standardizedFileURL
                 hideLoadingIndicator()
@@ -552,6 +713,19 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
                 syncDirectoryObservers()
             }
         }
+    }
+
+    /// Shows what has been read so far while `isLoading` stays true until the listing ends.
+    private func publishPartialContents(_ loaded: [FileItem], of directory: URL, preparation: DisplayPreparation) {
+        items = loaded
+        adopt(preparation, forRevision: itemsRevision)
+        columns = [
+            BrowserColumn(directory: directory, items: loaded, selectedItemID: nil, isLoading: false, errorMessage: nil)
+        ]
+        adopt(preparation, forRevision: columns[0].itemsRevision)
+        errorMessage = nil
+        hideLoadingIndicator()
+        isLoadingMoreItems = true
     }
 
     private func scheduleLoadingIndicator(unlessShowing directory: URL) {
@@ -644,9 +818,16 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
         items = currentColumn.items
         errorMessage = currentColumn.errorMessage
-        let availableIDs = Set(refreshedColumns.flatMap(\.items).map(\.id))
-        selection.formIntersection(availableIDs)
+        selection = Self.retainedSelection(selection, in: refreshedColumns.flatMap(\.items))
         syncDirectoryObservers()
+    }
+
+    /// Keeps selected items that still exist. Matching uses the standardized path because URLs
+    /// returned by rename and by directory listing can differ in a folder's trailing slash.
+    private static func retainedSelection(_ selection: Set<FileItem.ID>, in items: [FileItem]) -> Set<FileItem.ID> {
+        guard !selection.isEmpty else { return [] }
+        let selectedPaths = Set(selection.map(\.standardizedFileURL.path))
+        return Set(items.lazy.filter { selectedPaths.contains($0.url.standardizedFileURL.path) }.map(\.id))
     }
 
     private func updateAvailableCapacity(for directory: URL) async {
@@ -695,6 +876,13 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             do {
                 let folder = try await provider.createFolder(named: name, in: directory)
                 guard !Task.isCancelled else { return }
+                didRecordOperation(OperationRecord(
+                    kind: .newFolder,
+                    outcome: .completed,
+                    directory: directory,
+                    items: [OperationRecordItem(original: folder, result: folder)],
+                    requestedCount: 1
+                ))
                 finishOperation()
                 refresh()
                 selection = [folder]
@@ -714,6 +902,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             do {
                 let destination = try await provider.rename(item.url, to: newName)
                 guard !Task.isCancelled else { return }
+                if destination != item.url {
+                    didRecordOperation(OperationRecord(
+                        kind: .rename,
+                        outcome: .completed,
+                        directory: item.url.deletingLastPathComponent(),
+                        items: [OperationRecordItem(original: item.url, result: destination)],
+                        requestedCount: 1
+                    ))
+                }
                 finishOperation()
                 remapTabs(from: item.url, to: destination)
                 loadCurrentDirectory()
@@ -728,6 +925,70 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
     }
 
+    /// Starts renaming: one item uses the simple name sheet, several use batch rename.
+    func requestRename(_ targets: [FileItem]) {
+        guard !isPerformingOperation, let first = targets.first else { return }
+        if targets.count == 1 {
+            renameTarget = first
+        } else {
+            batchRenameRequest = BatchRenameRequest(targets: targets)
+        }
+    }
+
+    func batchRenamePlan(for targets: [FileItem], rule: BatchRenameRule) -> BatchRenamePlan {
+        BatchRenamePlan(
+            sources: targets.map(\.url),
+            rule: rule,
+            existingNames: siblingNames(of: targets)
+        )
+    }
+
+    func applyBatchRename(_ plan: BatchRenamePlan) {
+        guard !isPerformingOperation, plan.canApply else { return }
+        let renamer = BatchRenamer(provider: provider)
+        let directory = plan.entries.first?.source.deletingLastPathComponent() ?? currentURL
+        beginOperation()
+        operationTask = Task {
+            do {
+                let renamed = try await renamer.apply(plan)
+                didRecordOperation(OperationRecord(
+                    kind: .rename,
+                    outcome: .completed,
+                    directory: directory,
+                    items: plan.changedEntries.compactMap { entry in
+                        renamed[entry.source].map { OperationRecordItem(original: entry.source, result: $0) }
+                    },
+                    requestedCount: plan.changedEntries.count
+                ))
+                finishOperation()
+                for (source, destination) in renamed {
+                    remapTabs(from: source, to: destination)
+                }
+                refresh()
+                selection = Set(renamed.values)
+            } catch {
+                didRecordOperation(OperationRecord(
+                    kind: .rename,
+                    outcome: .failed,
+                    directory: directory,
+                    items: [],
+                    requestedCount: plan.changedEntries.count,
+                    errorMessage: error.localizedDescription
+                ))
+                finishOperation(error: error)
+                refresh()
+            }
+        }
+    }
+
+    /// Names in the folder that holds the targets, taken from whatever this pane has loaded.
+    private func siblingNames(of targets: [FileItem]) -> [String] {
+        guard let directory = targets.first?.url.deletingLastPathComponent().standardizedFileURL else { return [] }
+        let loaded = columns.first { $0.directory.standardizedFileURL == directory }?.items
+            ?? (currentURL.standardizedFileURL == directory ? items : [])
+        return loaded.map(\.name)
+    }
+
     func trashSelection() {
         trash(selectedItems)
     }
@@ -738,13 +999,25 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         beginOperation()
         operationTask = Task {
             var failures: [Error] = []
+            var trashed: [OperationRecordItem] = []
             for item in items {
                 guard !Task.isCancelled else { break }
                 do {
-                    try await provider.moveToTrash(item.url)
+                    let location = try await provider.moveToTrash(item.url)
+                    trashed.append(OperationRecordItem(original: item.url, trashed: location))
                 } catch {
                     failures.append(error)
                 }
+            }
+            if !trashed.isEmpty || !failures.isEmpty {
+                didRecordOperation(OperationRecord(
+                    kind: .trash,
+                    outcome: failures.isEmpty ? .completed : .failed,
+                    directory: items[0].url.deletingLastPathComponent(),
+                    items: trashed,
+                    requestedCount: items.count,
+                    errorMessage: failures.first?.localizedDescription
+                ))
             }
             guard !Task.isCancelled else {
                 finishOperation()
@@ -794,20 +1067,6 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         }
     }
 
-    private func compare<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {
-        switch (lhs, rhs) {
-        case let (lhs?, rhs?):
-            if lhs == rhs { return .orderedSame }
-            return lhs < rhs ? .orderedAscending : .orderedDescending
-        case (nil, nil):
-            return .orderedSame
-        case (nil, _?):
-            return .orderedDescending
-        case (_?, nil):
-            return .orderedAscending
-        }
-    }
-
     private func beginOperation() {
         operationErrorMessage = nil
         isPerformingOperation = true
@@ -828,6 +1087,15 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         activeTab = tab
     }
 
+    /// Keeps tabs and history pointing at an item renamed outside this pane, such as by undo.
+    func followRename(from source: URL, to destination: URL) {
+        let previousURL = currentURL
+        remapTabs(from: source, to: destination)
+        if currentURL != previousURL {
+            loadCurrentDirectory()
+        }
+    }
+
     private func remapTabs(from source: URL, to destination: URL) {
         tabs = tabs.map { tab in
             var updatedTab = tab
@@ -843,17 +1111,28 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     private func remapping(_ url: URL, from source: URL, to destination: URL) -> URL {
-        let standardizedURL = url.standardizedFileURL
-        let standardizedSource = source.standardizedFileURL
-        let standardizedDestination = destination.standardizedFileURL
-        guard standardizedURL == standardizedSource ||
-                standardizedURL.path.hasPrefix(standardizedSource.path + "/") else {
+        let path = Self.comparablePath(url)
+        let sourcePath = Self.comparablePath(source)
+        guard path == sourcePath || path.hasPrefix(sourcePath + "/") else {
             return url
         }
 
-        let relativePath = String(standardizedURL.path.dropFirst(standardizedSource.path.count))
+        let standardizedDestination = destination.standardizedFileURL
+        let relativePath = String(path.dropFirst(sourcePath.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !relativePath.isEmpty else { return standardizedDestination }
         return standardizedDestination.appendingPathComponent(relativePath, isDirectory: true)
+    }
+
+    /// `standardizedFileURL` drops the `/private` prefix of `/var` and `/tmp` only while the path
+    /// exists, so a renamed item's old URL and a stored tab URL can disagree. Normalize textually.
+    static func comparablePath(_ url: URL) -> String {
+        var path = url.standardizedFileURL.path
+        for alias in ["/private/var", "/private/tmp", "/private/etc"]
+        where path == alias || path.hasPrefix(alias + "/") {
+            path.removeFirst("/private".count)
+            break
+        }
+        return path
     }
 }

@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct TransferCenterView: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var queue: FileTransferQueueModel
-    @State private var showsHistory = false
     @State private var appliesToAll = false
 
     var body: some View {
@@ -19,6 +19,16 @@ struct TransferCenterView: View {
                         Text(L10n.text(job.kind == .copy ? "Copy" : "Move"))
                         Text("\(job.completedCount)/\(job.items.count)")
                             .monospacedDigit()
+                        if job.state == .running || job.state == .cancelling {
+                            ProgressView(value: job.fractionCompleted)
+                                .frame(width: 120)
+                                .accessibilityLabel("Transfer progress")
+                        }
+                        if let bytes = job.byteSummary {
+                            Text(bytes)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
                         Text(L10n.text(job.state.title))
                             .foregroundStyle(job.state == .failed ? .red : .secondary)
                         if let error = job.errorMessage {
@@ -33,16 +43,13 @@ struct TransferCenterView: View {
                             Button("Retry") { queue.retry(job.id) }
                         }
                     }
-                    Button("Transfers") { showsHistory = true }
+                    Button("Transfers") { appModel.isShowingOperationHistory = true }
                 }
                 .font(.caption)
                 .padding(.horizontal, 12)
                 .frame(height: 32)
             }
             .background(.regularMaterial)
-            .sheet(isPresented: $showsHistory) {
-                historySheet
-            }
             .onChange(of: queue.conflict?.id) {
                 appliesToAll = false
             }
@@ -69,65 +76,5 @@ struct TransferCenterView: View {
         .font(.callout)
         .padding(.horizontal, 12)
         .frame(minHeight: 42)
-    }
-
-    private var historySheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Transfers")
-                    .font(.headline)
-                Spacer()
-                Button("Done") { showsHistory = false }
-            }
-            List(queue.jobs.reversed()) { job in
-                HStack(spacing: 10) {
-                    Image(systemName: job.kind == .copy ? "doc.on.doc" : "arrow.right.doc.on.clipboard")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n.text(job.kind == .copy ? "Copy" : "Move"))
-                            .font(.body.weight(.medium))
-                        Text(job.destinationDirectory.lastPathComponent)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let error = job.errorMessage {
-                            Text(error).font(.caption).foregroundStyle(.red)
-                        }
-                    }
-                    Spacer()
-                    Text("\(job.completedCount)/\(job.items.count)")
-                        .monospacedDigit()
-                    Text(L10n.text(job.state.title))
-                        .foregroundStyle(.secondary)
-                    if job.state.canCancel {
-                        Button("Cancel") { queue.cancel(job.id) }
-                    } else if job.state.canRetry {
-                        Button("Retry") { queue.retry(job.id) }
-                    }
-                }
-            }
-        }
-        .padding(20)
-        .frame(width: 620, height: 360)
-    }
-}
-
-private extension FileTransferState {
-    var title: String {
-        switch self {
-        case .queued: "Queued"
-        case .running: "Running"
-        case .waitingForDecision: "Waiting for decision"
-        case .cancelling: "Cancelling"
-        case .completed: "Completed"
-        case .failed: "Failed"
-        case .cancelled: "Cancelled"
-        }
-    }
-
-    var canCancel: Bool {
-        self == .queued || self == .running || self == .waitingForDecision
-    }
-
-    var canRetry: Bool {
-        self == .failed || self == .cancelled
     }
 }

@@ -593,7 +593,7 @@ private struct ExtensionSettingsPage: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ExtensionCard(title: "Server Connections", detail: "SFTP, SMB, and WebDAV providers.", systemImage: "network")
                 ExtensionCard(title: "Stash Shelf", detail: "A temporary shelf for cross-pane workflows.", systemImage: "tray.full")
-                ExtensionCard(title: "Batch Rename", detail: "Composable filename transformations.", systemImage: "character.cursor.ibeam")
+                ExtensionCard(title: "Batch Rename", detail: "Rename several selected items with a live preview.", systemImage: "character.cursor.ibeam", planned: false)
                 ExtensionCard(title: "Archive Browser", detail: "Browse and extract archives as folders.", systemImage: "archivebox")
                 ExtensionCard(title: "Finder Extension", detail: "Quick launch and reveal actions.", systemImage: "finder")
                 ExtensionCard(title: "Folder Sync", detail: "Compare and synchronize two locations.", systemImage: "arrow.triangle.2.circlepath")
@@ -843,6 +843,7 @@ private struct ExtensionCard: View {
     let title: String
     let detail: String
     let systemImage: String
+    var planned = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -851,7 +852,9 @@ private struct ExtensionCard: View {
                     .font(.title2)
                     .foregroundStyle(Color.accentColor)
                 Spacer()
-                PlannedBadge()
+                if planned {
+                    PlannedBadge()
+                }
             }
             Text(L10n.text(title))
                 .font(.headline)
