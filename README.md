@@ -13,7 +13,7 @@ PaneSpace 是一款面向 macOS 26+ 的原生开源文件管理器，适合经�
 
 ## 下载
 
-**[下载 PaneSpace 0.1.1（Apple silicon）](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.1/PaneSpace-0.1.1-macos-arm64.zip)** · [查看所有版本](https://github.com/Rowan-rh/PaneSpace/releases)
+**[下载 PaneSpace 0.1.2（Apple silicon）](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.2/PaneSpace-0.1.2-macos-arm64.zip)** · [查看所有版本](https://github.com/Rowan-rh/PaneSpace/releases)
 
 下载并解压 ZIP，将 `PaneSpace.app` 拖到“应用程序”文件夹后启动。当前下载包适用于 **macOS 26 或更高版本的 Apple silicon Mac**。
 
@@ -29,7 +29,7 @@ PaneSpace 是一款面向 macOS 26+ 的原生开源文件管理器，适合经�
 - **拷贝与粘贴文件：** 选中文件后按 `⌘C`，在任意面板按 `⌘V` 粘贴到当前文件夹；可与访达互相拷贝粘贴，粘贴到原文件夹时生成副本。
 - **操作历史与撤销：** 复制、移动、重命名、移到废纸篓和新建文件夹都会记录，重启后仍可在“传输 > 操作历史”查看；用 `⌘Z` 或历史中的“撤销”还原操作，撤销只使用可恢复的步骤，不会永久删除文件。
 - **按需定制：** 管理侧栏工作区快捷方式，调整图标、名称与路径；设置外观、内容密度、侧栏和面板布局。
-- **键盘操作：** `⌘L` 输入路径，`Tab` / `Shift-Tab` 切换活动分栏，`⌘W` 关闭当前标签页或分栏，`⌘Z` 撤销上一次文件操作，`⌃⌘H` 打开操作历史。
+- **键盘操作：** `⌘L` 输入路径，`Tab` / `Shift-Tab` 切换活动分栏，`⌘W` 关闭当前标签页或分栏，`⌘C` / `⌘V` 拷贝与粘贴文件，`⌘Z` 撤销上一次文件操作，`⌃⌘H` 打开操作历史。
 - **中英文界面：** 支持简体中文和英文，默认跟随 macOS 语言设置。
 
 ## 当前限制
