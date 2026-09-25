@@ -13,7 +13,7 @@ PaneSpace is a native, open-source file manager for macOS 26 and later, built fo
 
 ## Download
 
-**[Download PaneSpace 0.1.1 for Apple silicon](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.1/PaneSpace-0.1.1-macos-arm64.zip)** · [All releases](https://github.com/Rowan-rh/PaneSpace/releases)
+**[Download PaneSpace 0.1.2 for Apple silicon](https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.2/PaneSpace-0.1.2-macos-arm64.zip)** · [All releases](https://github.com/Rowan-rh/PaneSpace/releases)
 
 Download and extract the ZIP, move `PaneSpace.app` to Applications, and open it. The current download is for **Apple silicon Macs running macOS 26 or later**.
 
@@ -29,7 +29,7 @@ Download and extract the ZIP, move `PaneSpace.app` to Applications, and open it.
 - **Copy and paste files:** Select files and press `Command-C`, then press `Command-V` in any pane to paste them into its current folder. Works with Finder in both directions; pasting into the same folder makes a copy.
 - **Operation history and undo:** Copies, moves, renames, Trash, and new folders are recorded and stay available after relaunch under Transfer > Operation History. Undo them with `Command-Z` or from the history; undo uses only recoverable steps and never deletes files permanently.
 - **Personalization:** Manage sidebar workspace shortcuts, including their names, icons, and paths. Adjust appearance, content density, sidebar, and pane layout in Settings.
-- **Keyboard controls:** `Command-L` enters a path, `Tab` / `Shift-Tab` switches the active pane, `Command-W` closes the active tab or pane, `Command-Z` undoes the last file operation, and `Control-Command-H` opens the operation history.
+- **Keyboard controls:** `Command-L` enters a path, `Tab` / `Shift-Tab` switches the active pane, `Command-W` closes the active tab or pane, `Command-C` / `Command-V` copy and paste files, `Command-Z` undoes the last file operation, and `Control-Command-H` opens the operation history.
 - **English and Simplified Chinese:** The interface follows the macOS language setting by default.
 
 ## Current limitations
