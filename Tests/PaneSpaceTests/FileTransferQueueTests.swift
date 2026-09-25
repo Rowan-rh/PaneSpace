@@ -117,6 +117,23 @@ final class FileTransferQueueTests: XCTestCase {
         XCTAssertEqual(queue.jobs[0].fractionCompleted, 1)
     }
 
+    @MainActor
+    func testCopyIntoSourceFolderDuplicatesWithoutAskingForDecision() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("photo.jpg")
+        try Data("image".utf8).write(to: source)
+        let queue = FileTransferQueueModel()
+
+        queue.enqueue(kind: .copy, sources: [source], destinationDirectory: root)
+        try await waitUntil { queue.jobs[0].state == .completed || queue.jobs[0].state == .failed }
+
+        XCTAssertEqual(queue.jobs[0].state, .completed)
+        XCTAssertNil(queue.conflict)
+        XCTAssertEqual(queue.jobs[0].items[0].destination?.lastPathComponent, "photo copy 2.jpg")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

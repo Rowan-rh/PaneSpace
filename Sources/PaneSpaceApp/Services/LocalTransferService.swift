@@ -22,11 +22,12 @@ actor LocalTransferService {
         }
     }
 
-    func validate(source: URL, destinationDirectory: URL) throws {
+    /// A copy may target the source's own folder, where it becomes a duplicate; a move may not.
+    func validate(source: URL, destinationDirectory: URL, kind: FileTransferKind) throws {
         guard source.isFileURL, destinationDirectory.isFileURL,
               let sourceParent = canonicalURL(for: source.deletingLastPathComponent()),
               let destinationDirectory = canonicalURL(for: destinationDirectory),
-              sourceParent != destinationDirectory else {
+              kind == .copy || sourceParent != destinationDirectory else {
             throw LocalTransferError.invalidDestination
         }
 
@@ -45,6 +46,14 @@ actor LocalTransferService {
         }
     }
 
+    /// Whether a copy of `source` into `directory` lands next to the source itself. Such a copy
+    /// always keeps both, because replacing would move the source to the Trash.
+    func isDuplicate(source: URL, in directory: URL) -> Bool {
+        guard let sourceParent = canonicalURL(for: source.deletingLastPathComponent()),
+              let directory = canonicalURL(for: directory) else { return false }
+        return sourceParent == directory
+    }
+
     func destination(for source: URL, in directory: URL) -> URL {
         directory.appendingPathComponent(source.lastPathComponent)
     }
@@ -61,13 +70,16 @@ actor LocalTransferService {
         conflictDecision: FileConflictDecision?,
         progress: TransferByteCounter? = nil
     ) throws -> LocalTransferOutcome? {
-        try validate(source: source, destinationDirectory: destinationDirectory)
+        try validate(source: source, destinationDirectory: destinationDirectory, kind: kind)
         try Task.checkCancellation()
 
         let proposed = destination(for: source, in: destinationDirectory)
+        let decision: FileConflictDecision? = kind == .copy && isDuplicate(source: source, in: destinationDirectory)
+            ? .keepBoth
+            : conflictDecision
         let target: URL
         if exists(at: proposed) {
-            switch conflictDecision {
+            switch decision {
             case .keepBoth:
                 target = uniqueDestination(for: proposed)
             case .replace:
@@ -93,7 +105,7 @@ actor LocalTransferService {
 
         var replacedItemInTrash: URL?
         if exists(at: target) {
-            guard conflictDecision == .replace else {
+            guard decision == .replace else {
                 throw LocalTransferError.destinationExists
             }
             replacedItemInTrash = try trashItem(target)

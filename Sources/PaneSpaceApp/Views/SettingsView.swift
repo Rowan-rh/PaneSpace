@@ -502,6 +502,8 @@ private struct HotkeySettingsPage: View {
                 HotkeyRow(title: "Toggle Second Pane", shortcut: "⌥⌘D")
                 HotkeyRow(title: "Quick Look", shortcut: "Space")
                 HotkeyRow(title: "New Folder", shortcut: "⇧⌘N")
+                HotkeyRow(title: "Copy", shortcut: "⌘C")
+                HotkeyRow(title: "Paste", shortcut: "⌘V")
             }
 
             PlannedCallout(text: "Custom shortcut recording and conflict detection are planned.")

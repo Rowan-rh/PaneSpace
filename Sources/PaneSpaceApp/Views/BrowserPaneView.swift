@@ -738,6 +738,7 @@ private struct ColumnBrowserView: View {
                 model.selectAllItems(inColumn: columnID)
                 return .handled
             }
+            .modifier(FilePasteboardShortcuts(model: model, slot: slot))
             .onKeyPress(.rightArrow) {
                 guard !model.isLoading,
                       let columnID = activeColumnID,
@@ -1033,6 +1034,7 @@ private struct FileListView: View {
                     model.selectAllVisibleItems()
                     return .handled
                 }
+                .modifier(FilePasteboardShortcuts(model: model, slot: slot))
         }
     }
 
@@ -1083,6 +1085,28 @@ private struct FileListView: View {
             model.open(targets)
             return .handled
         }
+    }
+}
+
+/// ⌘C and ⌘V for files. Text fields answer the Edit menu's Copy and Paste themselves; the file
+/// list and column browser do not, so these keys fall through to them only there.
+private struct FilePasteboardShortcuts: ViewModifier {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+
+    func body(content: Content) -> some View {
+        content
+            .onKeyPress(characters: CharacterSet(charactersIn: "cC")) { press in
+                guard press.modifiers == .command, !model.isLoading,
+                      appModel.copySelectionToPasteboard(from: slot) else { return .ignored }
+                return .handled
+            }
+            .onKeyPress(characters: CharacterSet(charactersIn: "vV")) { press in
+                guard press.modifiers == .command,
+                      appModel.pasteFromPasteboard(into: slot) else { return .ignored }
+                return .handled
+            }
     }
 }
 

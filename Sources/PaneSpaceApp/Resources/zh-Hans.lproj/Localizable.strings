@@ -279,6 +279,7 @@
 "%@ available" = "可用 %@";
 "Copy" = "复制";
 "Move" = "移动";
+"Paste" = "粘贴";
 "Copy to Pane" = "复制到面板";
 "Move to Pane" = "移动到面板";
 "Copy to Next Pane" = "复制到下一个面板";

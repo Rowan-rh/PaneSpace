@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published var isShowingOperationHistory = false
     @Published private(set) var isUndoing = false
     private let undoService: OperationUndoService
+    private let filePasteboard: FilePasteboard
 
     @Published private(set) var primaryPane: BrowserPaneModel
     @Published private(set) var secondaryPane: BrowserPaneModel
@@ -40,10 +41,12 @@ final class AppModel: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         operationHistory: OperationHistoryModel? = nil,
-        undoService: OperationUndoService = OperationUndoService()
+        undoService: OperationUndoService = OperationUndoService(),
+        filePasteboard: FilePasteboard = FilePasteboard()
     ) {
         self.defaults = defaults
         self.undoService = undoService
+        self.filePasteboard = filePasteboard
         self.operationHistory = operationHistory ?? OperationHistoryModel()
         workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
         let fileManager = FileManager.default
@@ -260,6 +263,24 @@ final class AppModel: ObservableObject {
     func transferSelection(from sourceSlot: PaneSlot, to destinationSlot: PaneSlot, kind: FileTransferKind) {
         let urls = pane(for: sourceSlot).selectedItems.map(\.url)
         transfer(urls, from: sourceSlot, to: destinationSlot, kind: kind)
+    }
+
+    // MARK: Pasteboard
+
+    /// Puts the pane's selected items on the pasteboard for ⌘V here or in other apps.
+    @discardableResult
+    func copySelectionToPasteboard(from slot: PaneSlot) -> Bool {
+        filePasteboard.write(pane(for: slot).selectedItems.map(\.url))
+    }
+
+    /// Copies the files on the pasteboard into the pane through the transfer queue, which asks
+    /// before replacing anything. Pasting into the items' own folder duplicates them.
+    @discardableResult
+    func pasteFromPasteboard(into slot: PaneSlot) -> Bool {
+        let urls = filePasteboard.fileURLs()
+        guard paneLayout.visibleSlots.contains(slot), !urls.isEmpty else { return false }
+        transfer(urls, from: nil, to: slot, kind: .copy)
+        return true
     }
 
     // MARK: Undo

@@ -111,19 +111,24 @@ final class FileTransferQueueModel: ObservableObject {
                     jobs[jobIndex].items[itemIndex].sourceInTrash = try await service.removeSourceAfterCopy(source)
                     jobs[jobIndex].items[itemIndex].needsSourceRemoval = false
                 } else {
-                    try await service.validate(source: source, destinationDirectory: directory)
+                    let kind = jobs[jobIndex].kind
+                    try await service.validate(source: source, destinationDirectory: directory, kind: kind)
                     let proposed = await service.destination(for: source, in: directory)
                     let decision: FileConflictDecision?
                     if await service.exists(at: proposed) {
-                        decision = await requestDecision(jobID: jobID, source: source, destination: proposed)
-                        try Task.checkCancellation()
+                        if kind == .copy, await service.isDuplicate(source: source, in: directory) {
+                            decision = .keepBoth
+                        } else {
+                            decision = await requestDecision(jobID: jobID, source: source, destination: proposed)
+                            try Task.checkCancellation()
+                        }
                     } else {
                         decision = nil
                     }
                     let outcome = try await service.transfer(
                         source: source,
                         to: directory,
-                        kind: jobs[jobIndex].kind,
+                        kind: kind,
                         conflictDecision: decision,
                         progress: counter
                     )

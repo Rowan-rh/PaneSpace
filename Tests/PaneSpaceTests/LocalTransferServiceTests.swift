@@ -78,6 +78,31 @@ final class LocalTransferServiceTests: XCTestCase {
         }
     }
 
+    func testCopyIntoSourceFolderKeepsBothAndMoveIsRejected() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("note.txt")
+        try Data("original".utf8).write(to: source)
+
+        let service = LocalTransferService(trashItem: { _ in
+            XCTFail("A duplicate must never replace its source")
+            return nil
+        })
+        let outcome = try await service.transfer(source: source, to: root, kind: .copy, conflictDecision: .replace)
+
+        let duplicate = root.appendingPathComponent("note copy 2.txt")
+        XCTAssertEqual(outcome?.destination.lastPathComponent, duplicate.lastPathComponent)
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "original")
+        XCTAssertEqual(try String(contentsOf: duplicate, encoding: .utf8), "original")
+
+        do {
+            _ = try await service.transfer(source: source, to: root, kind: .move, conflictDecision: .keepBoth)
+            XCTFail("Expected moving into the same folder to be rejected")
+        } catch LocalTransferError.invalidDestination {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        }
+    }
+
     func testReplaceMovesExistingDestinationToRecoverableTrash() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
