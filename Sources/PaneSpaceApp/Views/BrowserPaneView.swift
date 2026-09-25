@@ -99,6 +99,14 @@ struct BrowserPaneView: View {
         .onDeleteCommand {
             requestTrash(model.selectedItems)
         }
+        // ⌘C and ⌘V reach AppModel through PaneKeyboardMonitor; these serve the Edit menu.
+        .onCopyCommand {
+            appModel.copySelectionToPasteboard(from: slot)
+            return []
+        }
+        .onPasteCommand(of: [.fileURL]) { _ in
+            appModel.pasteFromPasteboard(into: slot)
+        }
         .alert("Move to Trash?", isPresented: $confirmsTrash, presenting: pendingTrashItems) { targets in
             Button("Cancel", role: .cancel) {}
             Button("Move to Trash", role: .destructive) {
