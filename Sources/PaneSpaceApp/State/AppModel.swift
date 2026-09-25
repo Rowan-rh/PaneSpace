@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published var isShowingOperationHistory = false
     @Published private(set) var isUndoing = false
     private let undoService: OperationUndoService
+    private let filePasteboard: FilePasteboard
 
     @Published private(set) var primaryPane: BrowserPaneModel
     @Published private(set) var secondaryPane: BrowserPaneModel
@@ -40,10 +41,12 @@ final class AppModel: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         operationHistory: OperationHistoryModel? = nil,
-        undoService: OperationUndoService = OperationUndoService()
+        undoService: OperationUndoService = OperationUndoService(),
+        filePasteboard: FilePasteboard? = nil
     ) {
         self.defaults = defaults
         self.undoService = undoService
+        self.filePasteboard = filePasteboard ?? FilePasteboard()
         self.operationHistory = operationHistory ?? OperationHistoryModel()
         workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
         let fileManager = FileManager.default
@@ -260,6 +263,33 @@ final class AppModel: ObservableObject {
     func transferSelection(from sourceSlot: PaneSlot, to destinationSlot: PaneSlot, kind: FileTransferKind) {
         let urls = pane(for: sourceSlot).selectedItems.map(\.url)
         transfer(urls, from: sourceSlot, to: destinationSlot, kind: kind)
+    }
+
+    // MARK: Pasteboard
+
+    /// Puts the pane's selected items on the pasteboard. Returns false when nothing is selected,
+    /// so the pasteboard keeps whatever it held before.
+    @discardableResult
+    func copySelectionToPasteboard(from slot: PaneSlot) -> Bool {
+        let urls = pane(for: slot).selectedItems.map(\.url)
+        guard !urls.isEmpty else { return false }
+        filePasteboard.write(urls)
+        return true
+    }
+
+    /// Copies the files on the pasteboard into the folder the pane is showing. Existing names go
+    /// through the queue's conflict handling; pasting into an item's own folder duplicates it.
+    /// Returns false when the pasteboard holds no files.
+    @discardableResult
+    func pasteFromPasteboard(into slot: PaneSlot) -> Bool {
+        let urls = filePasteboard.fileURLs()
+        guard !urls.isEmpty else { return false }
+        transferQueue.enqueue(
+            kind: .copy,
+            sources: urls,
+            destinationDirectory: pane(for: slot).transferDestinationURL
+        )
+        return true
     }
 
     // MARK: Undo
