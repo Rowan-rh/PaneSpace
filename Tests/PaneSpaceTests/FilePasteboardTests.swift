@@ -98,7 +98,48 @@ final class FilePasteboardTests: XCTestCase {
         let job = try XCTUnwrap(model.transferQueue.jobs.first)
         XCTAssertEqual(job.kind, .copy)
         XCTAssertEqual(job.items.map(\.source.standardizedFileURL), [copied.standardizedFileURL])
-        XCTAssertEqual(job.destinationDirectory, model.secondaryPane.transferDestinationURL)
+        XCTAssertEqual(job.destinationDirectory, model.secondaryPane.currentURL)
         model.transferQueue.cancel(job.id)
+    }
+
+    @MainActor
+    func testPasteInColumnViewGoesIntoTheOpenedFolder() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let model = AppModel(defaults: defaults, filePasteboard: FilePasteboard(pasteboard: pasteboard))
+        let source = root.appendingPathComponent("Source", isDirectory: true)
+        let target = root.appendingPathComponent("Target", isDirectory: true)
+        for directory in [source, target] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let copied = source.appendingPathComponent("copied.txt")
+        try Data("x".utf8).write(to: copied)
+        let pane = model.primaryPane
+        pane.navigate(to: root)
+        try await waitUntil { !pane.isLoading && pane.items.count == 2 }
+        pane.setViewMode(.columns)
+        let folder = try XCTUnwrap(pane.items.first { $0.name == "Target" })
+        pane.selectColumnItem(folder, in: try XCTUnwrap(pane.columns.first).id)
+        try await waitUntil { pane.columns.count == 2 && pane.columns.last?.isLoading == false }
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([copied as NSURL])
+        XCTAssertTrue(model.pasteFromPasteboard(into: .primary))
+
+        let job = try XCTUnwrap(model.transferQueue.jobs.first)
+        XCTAssertEqual(job.destinationDirectory.standardizedFileURL, target.standardizedFileURL)
+        try await waitUntil { job.id == model.transferQueue.jobs.first?.id && model.transferQueue.jobs[0].state == .completed }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("copied.txt").path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: source.path), ["copied.txt"])
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<150 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("Timed out")
     }
 }

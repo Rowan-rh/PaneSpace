@@ -277,9 +277,12 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    /// Copies the files on the pasteboard into the folder the pane is showing. Existing names go
-    /// through the queue's conflict handling; pasting into an item's own folder duplicates it.
-    /// Returns false when the pasteboard holds no files.
+    /// Copies the files on the pasteboard into the folder the pane's path bar shows. Existing
+    /// names go through the queue's conflict handling; pasting into an item's own folder
+    /// duplicates it. Returns false when the pasteboard holds no files.
+    ///
+    /// Unlike pane-to-pane transfers, a folder opened in the column browser receives the paste:
+    /// the path bar names it, and it is the only way to paste into an empty folder there.
     @discardableResult
     func pasteFromPasteboard(into slot: PaneSlot) -> Bool {
         let urls = filePasteboard.fileURLs()
@@ -287,7 +290,7 @@ final class AppModel: ObservableObject {
         transferQueue.enqueue(
             kind: .copy,
             sources: urls,
-            destinationDirectory: pane(for: slot).transferDestinationURL
+            destinationDirectory: pane(for: slot).currentURL
         )
         return true
     }
