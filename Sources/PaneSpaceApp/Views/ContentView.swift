@@ -29,8 +29,16 @@ struct ContentView: View {
         }
         .tint(accent)
         .background(WindowFrameAutosaver())
-        .background(PaneKeyboardMonitor { backward in
-            appModel.cycleActivePane(backward: backward)
+        .background(PaneKeyboardMonitor { command in
+            switch command {
+            case let .cycle(backward):
+                appModel.cycleActivePane(backward: backward)
+                return true
+            case .copy:
+                return appModel.copySelectionToPasteboard(from: appModel.activePane)
+            case .paste:
+                return appModel.pasteFromPasteboard(into: appModel.activePane)
+            }
         })
         .safeAreaInset(edge: .bottom, spacing: 0) {
             TransferCenterView(queue: appModel.transferQueue)
