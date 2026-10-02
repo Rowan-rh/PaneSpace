@@ -683,12 +683,15 @@ private struct PathBarView: View {
 
     @ViewBuilder
     private var actionMenuItems: some View {
-        Button("New Folder") { appModel.requestNewFolder() }
+        // The slot travels with the command: this menu belongs to one pane, but the naming sheet
+        // is created against the active pane, so a request from an inactive one has to name it.
+        Button("New Folder") { appModel.requestNewFolder(from: slot) }
+            .disabled(model.isPerformingOperation)
         Button("Show in Finder") { model.revealSelectionInFinder() }
             .disabled(model.selectedItems.isEmpty)
         Divider()
-        Button("Open in Terminal — Planned") {}
-            .disabled(true)
+        Button("Open in Terminal") { model.openInTerminal() }
+            .disabled(model.isPerformingOperation)
         Button("Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(model.currentURL.path, forType: .string)
@@ -930,6 +933,12 @@ private struct ColumnView: View {
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
+        // The background of a column offers the commands for the folder it holds. It is attached to
+        // the column rather than to its rows, so each item keeps the menu it already had, and it
+        // also covers the empty-column case, which is the one users reach for most.
+        .contextMenu {
+            PaneBackgroundActionsMenu(model: model, slot: slot, directory: column.directory)
+        }
     }
 }
 
@@ -1062,11 +1071,15 @@ private struct FileListView: View {
             }
         }
         // The selection-aware menu targets the whole selection when the clicked row is part of
-        // it, and opens the targets on double-click.
+        // it, and opens the targets on double-click. A right-click on empty space arrives here with
+        // no ids, and the menu was empty; it now offers the commands that act on the folder on
+        // screen. The slot is passed because this pane need not be the active one.
         .contextMenu(forSelectionType: FileItem.ID.self) { ids in
             let targets = model.items(for: ids)
             if !targets.isEmpty {
                 FileItemActionsMenu(model: model, slot: slot, targets: targets, requestTrash: requestTrash)
+            } else {
+                PaneBackgroundActionsMenu(model: model, slot: slot)
             }
         } primaryAction: { ids in
             model.open(model.items(for: ids))
@@ -1101,6 +1114,26 @@ private func currentSelectionModifier() -> BrowserPaneModel.SelectionModifier {
     if flags.contains(.command) { return .toggle }
     if flags.contains(.shift) { return .range }
     return .none
+}
+
+/// The commands a right-click on empty space offers.
+///
+/// They act on a folder rather than on a selection, so the target is passed explicitly: the column
+/// the user clicked in the column browser, and nothing in the list browser, where the folder on
+/// screen is the only folder the user can see. The pane travels with the request because a context
+/// menu does not make its pane active, while the naming sheet is created against the active pane.
+private struct PaneBackgroundActionsMenu: View {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+    var directory: URL?
+
+    var body: some View {
+        Button("New Folder") { appModel.requestNewFolder(in: directory, from: slot) }
+            .disabled(model.isPerformingOperation)
+        Button("Open in Terminal") { model.openInTerminal(directory) }
+            .disabled(model.isPerformingOperation)
+    }
 }
 
 private struct FileItemActionsMenu: View {

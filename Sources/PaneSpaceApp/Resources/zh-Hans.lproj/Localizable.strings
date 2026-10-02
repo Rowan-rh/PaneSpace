@@ -161,7 +161,7 @@
 "Open Second Pane" = "打开第二个面板";
 "Open Settings" = "打开系统设置";
 "Open folders in a new tab" = "在新标签中打开文件夹";
-"Open in Terminal — Planned" = "在终端中打开 — 规划中";
+"Open in Terminal" = "在终端中打开";
 "Open windows keep their current folders, but visual and behavior preferences return to defaults." = "已打开窗口会保留当前文件夹，外观和行为设置将恢复默认值。";
 "Open workspaces in tabs" = "在标签中打开工作区";
 "Optional modules planned after the local file-operation engine." = "本地文件操作引擎完成后将提供可选模块。";
