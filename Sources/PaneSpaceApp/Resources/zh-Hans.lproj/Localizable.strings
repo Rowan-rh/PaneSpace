@@ -306,6 +306,7 @@
 "The copy completed, but the source could not be moved to Trash: %@" = "复制已完成，但源项目无法移到废纸篓：%@";
 "Add workspaces in Settings" = "在设置中添加工作区";
 "This folder is currently unavailable." = "此文件夹当前不可用。";
+"No terminal application could be opened." = "无法打开终端应用。";
 "Enter a workspace name." = "请输入工作区名称。";
 "This is not a valid SF Symbol name." = "这不是有效的 SF Symbol 名称。";
 "No workspaces yet. Add a folder you open often." = "还没有工作区。添加一个常用的文件夹吧。";

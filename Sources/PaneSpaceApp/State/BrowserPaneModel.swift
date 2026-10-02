@@ -46,6 +46,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var operationTask: Task<Void, Never>?
     private var directoryObservers: [URL: LocalDirectoryObserver] = [:]
     private let pathResolver = LocalPathResolver()
+    /// Kept injectable so a pane can be exercised without launching an application.
+    private let terminalLauncher: TerminalLauncher
     private var observesDirectories = false
     private var hasPendingDirectoryLoad = false
     private var selectionURLToRestoreAfterRefresh: URL?
@@ -66,7 +68,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
         provider: FileProviding = LocalFileProvider(),
-        session: BrowserPaneSession? = nil
+        session: BrowserPaneSession? = nil,
+        terminalLauncher: TerminalLauncher = TerminalLauncher()
     ) {
         let fallbackTab = BrowserTab(url: url)
         let restoredTabs = if let session, !session.tabs.isEmpty {
@@ -81,6 +84,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             self.activeTabID = restoredTabs[0].id
         }
         self.provider = provider
+        self.terminalLauncher = terminalLauncher
         self.viewMode = session?.viewMode ?? BrowserViewMode(
             rawValue: UserDefaults.standard.string(forKey: "defaultViewMode") ?? "list"
         ) ?? .list
@@ -1056,6 +1060,29 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func reveal(_ targets: [FileItem]) {
         guard !targets.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.url))
+    }
+
+    /// Opens the folder this pane shows in a terminal. The target is `currentURL` rather than the
+    /// selection, because the address bar and the paste target already agree on that folder, and a
+    /// terminal session has to start somewhere concrete.
+    func openCurrentDirectoryInTerminal() {
+        let directory = currentURL
+        // The pane can still be pointed at a folder that was removed or unmounted after it loaded,
+        // and launching a terminal there would fail with a message the user cannot act on.
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            operationErrorMessage = TerminalLauncherError.directoryUnavailable.localizedDescription
+            return
+        }
+        operationErrorMessage = nil
+        terminalLauncher.open(directory) { [weak self] identifier in
+            guard let self, identifier == nil else { return }
+            // A nil identifier means no terminal was found or the launch was refused; the two are
+            // told apart by whether a terminal is installed at all.
+            let error: TerminalLauncherError = terminalLauncher.availableTerminalIdentifier() == nil
+                ? .noTerminalAvailable
+                : .launchFailed
+            self.operationErrorMessage = error.localizedDescription
+        }
     }
 
     func setSort(_ newSort: FileSort) {
