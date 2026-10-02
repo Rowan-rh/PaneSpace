@@ -163,12 +163,69 @@ final class NewFolderInDirectoryTests: XCTestCase {
         XCTAssertEqual(model.takePendingNewFolderDirectory()?.standardizedFileURL, second.standardizedFileURL)
     }
 
-    private func makeAppModel() throws -> (AppModel, String) {
+    private func makeAppModel(layout: PaneLayout = .single) throws -> (AppModel, String) {
         let suiteName = "PaneSpaceTests.NewFolder.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.set(false, forKey: "restoreLastSession")
-        defaults.set(PaneLayout.single.rawValue, forKey: "defaultPaneLayout")
+        defaults.set(layout.rawValue, forKey: "defaultPaneLayout")
         return (AppModel(defaults: defaults), suiteName)
+    }
+
+    // MARK: - Acting on the pane the command came from
+
+    /// A context menu on a pane does not make that pane active, because the pane only switches on a
+    /// left click. Without naming the source pane, creating from the right-hand pane's empty area
+    /// would create the folder in the left-hand pane and record the operation against it.
+    func testCreatingFromAnInactivePaneTargetsThatPane() async throws {
+        let (model, suiteName) = try makeAppModel(layout: .twoColumns)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let left = try makeChild("Left")
+        let right = try makeChild("Right")
+        model.primaryPane.navigate(to: left)
+        model.secondaryPane.navigate(to: right)
+        model.activePane = .primary
+        try await waitForPane { !model.primaryPane.isLoading && !model.secondaryPane.isLoading }
+        XCTAssertEqual(model.activePane, .primary)
+
+        // The command arrives from the right-hand pane, which is not the active one.
+        model.requestNewFolder(from: .secondary)
+        XCTAssertEqual(model.activePane, .secondary, "The pane the command came from has to become active")
+
+        // The naming sheet creates against the active pane, using the held target.
+        model.activePaneModel.createFolder(
+            named: "Projects",
+            in: model.takePendingNewFolderDirectory()
+        )
+        try await waitForPane { !model.secondaryPane.isPerformingOperation }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: right.appendingPathComponent("Projects").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: left.appendingPathComponent("Projects").path))
+    }
+
+    /// Naming the source pane must not disturb a request that already came from the active one.
+    func testRequestFromTheActivePaneLeavesItActive() throws {
+        let (model, suiteName) = try makeAppModel(layout: .twoColumns)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let target = try makeChild("Target")
+        model.activePane = .secondary
+
+        model.requestNewFolder(in: target, from: .secondary)
+
+        XCTAssertEqual(model.activePane, .secondary)
+        XCTAssertEqual(model.takePendingNewFolderDirectory()?.standardizedFileURL, target.standardizedFileURL)
+    }
+
+    /// A request with no source pane keeps the existing behavior, so menu items that are not tied to
+    /// a pane keep working unchanged.
+    func testRequestWithoutASourcePaneLeavesTheActivePaneAlone() throws {
+        let (model, suiteName) = try makeAppModel(layout: .twoColumns)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        model.activePane = .secondary
+
+        model.requestNewFolder()
+
+        XCTAssertEqual(model.activePane, .secondary)
+        XCTAssertTrue(model.isCreatingFolder)
     }
 }
 

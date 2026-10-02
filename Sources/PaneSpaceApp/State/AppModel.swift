@@ -205,11 +205,18 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Asks for the new-folder naming sheet. `directory` is the folder the command was aimed at,
-    /// which in the column browser is the column the user clicked rather than the folder the
-    /// address bar shows. It is held here because the sheet is presented by a view that only knows
+    /// Asks for the new-folder naming sheet.
+    ///
+    /// `directory` is the folder the command was aimed at, which in the column browser is the
+    /// column the user clicked rather than the folder the address bar shows. `slot` is the pane the
+    /// command came from: a context menu on a pane that is not the active one must still create the
+    /// folder there, and since the sheet is created against `activePaneModel`, that pane has to
+    /// become active first. It is held here because the sheet is presented by a view that only knows
     /// about `AppModel`, while the creation itself belongs to the pane.
-    func requestNewFolder(in directory: URL? = nil) {
+    func requestNewFolder(in directory: URL? = nil, from slot: PaneSlot? = nil) {
+        if let slot, slot != activePane {
+            activePane = slot
+        }
         pendingNewFolderDirectory = directory
         isCreatingFolder = true
     }
