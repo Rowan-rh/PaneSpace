@@ -1051,6 +1051,13 @@ private struct FileListView: View {
                     return .handled
                 }
         }
+        // SwiftUI only invokes the selection-aware menu above when the click lands on a row, so the
+        // empty-ids branch of it can never run and the space below the last row has no menu at all.
+        // This menu sits on the container instead, which is what the empty area belongs to; the rows
+        // keep the menu they already had because that one is closer to them.
+        .contextMenu {
+            PaneBackgroundActionsMenu(model: model, slot: slot)
+        }
     }
 
     private var list: some View {
@@ -1071,15 +1078,13 @@ private struct FileListView: View {
             }
         }
         // The selection-aware menu targets the whole selection when the clicked row is part of
-        // it, and opens the targets on double-click. A right-click on empty space arrives here with
-        // no ids, and the menu was empty; it now offers the commands that act on the folder on
-        // screen. The slot is passed because this pane need not be the active one.
+        // it, and opens the targets on double-click. The empty space below the last row is not part
+        // of this menu: SwiftUI never calls it for a click that misses every row, which is why the
+        // commands for the folder on screen live on the container in `body` instead.
         .contextMenu(forSelectionType: FileItem.ID.self) { ids in
             let targets = model.items(for: ids)
             if !targets.isEmpty {
                 FileItemActionsMenu(model: model, slot: slot, targets: targets, requestTrash: requestTrash)
-            } else {
-                PaneBackgroundActionsMenu(model: model, slot: slot)
             }
         } primaryAction: { ids in
             model.open(model.items(for: ids))
