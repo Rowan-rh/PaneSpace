@@ -167,12 +167,23 @@ struct BrowserPaneView: View {
                     )
                     .allowsHitTesting(false)
                 } else if model.visibleItems.isEmpty {
+                    // This branch is the one the list above cannot serve: the list is transparent
+                    // while there is nothing to list, and SwiftUI does not hit-test transparent
+                    // views, so both its row menu and the container's menu go unanswered here. The
+                    // empty view therefore carries the folder's own commands itself, and takes hit
+                    // testing so a right-click on it reaches them. The error state above keeps
+                    // passing the click through: a folder that could not be read must not offer to
+                    // create something in it.
                     ContentUnavailableView(
                         L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                         systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
                         description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
                     )
-                    .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        PaneBackgroundActionsMenu(model: model, slot: slot)
+                    }
                 }
             }
         } else {
