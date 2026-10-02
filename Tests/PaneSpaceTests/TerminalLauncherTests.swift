@@ -207,7 +207,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         let model = makeModel(launcher: launcher)
         try await waitForPane { !model.isLoading }
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertEqual(launcher.lastOpenedDirectory?.standardizedFileURL, directory.standardizedFileURL)
@@ -223,7 +223,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
 
         model.navigate(to: child)
         try await waitForPane { !model.isLoading && model.currentURL == child }
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertEqual(launcher.lastOpenedDirectory?.standardizedFileURL, child.standardizedFileURL)
@@ -241,7 +241,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         XCTAssertEqual(model.selectedItems.count, 1)
         XCTAssertNotEqual(model.selectedItems.first?.url.standardizedFileURL, directory.standardizedFileURL)
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertEqual(launcher.lastOpenedDirectory?.standardizedFileURL, directory.standardizedFileURL)
@@ -252,7 +252,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         try await waitForPane { !model.isLoading }
         try FileManager.default.removeItem(at: directory)
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertTrue(launcher.openedDirectories.isEmpty, "No terminal may be launched for a folder that is gone")
@@ -267,7 +267,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         let model = makeModel(launcher: empty)
         try await waitForPane { !model.isLoading }
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertTrue(empty.openedDirectories.isEmpty)
@@ -283,7 +283,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         let model = makeModel(launcher: launcher)
         try await waitForPane { !model.isLoading }
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertEqual(
@@ -299,7 +299,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         model.operationErrorMessage = "earlier failure"
         XCTAssertNotNil(model.operationErrorMessage)
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
 
         XCTAssertNil(model.operationErrorMessage)
@@ -312,7 +312,7 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         let model = makeModel(launcher: launcher)
         try await waitForPane { !model.isLoading }
 
-        model.openCurrentDirectoryInTerminal()
+        model.openInTerminal()
         await settleCompletion()
         XCTAssertNil(model.operationErrorMessage)
 
@@ -321,6 +321,53 @@ final class OpenDirectoryInTerminalPaneTests: XCTestCase {
         XCTAssertEqual(
             model.operationErrorMessage,
             TerminalLauncherError.launchFailed.localizedDescription
+        )
+    }
+
+    /// A context menu in the column browser opens the column the user clicked, not the deepest
+    /// column the address bar happens to show.
+    func testOpensTheDirectoryItIsGivenRatherThanTheOneOnScreen() async throws {
+        let child = directory.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: false)
+        let model = makeModel(launcher: launcher)
+        try await waitForPane { !model.isLoading }
+        model.navigate(to: child)
+        try await waitForPane { !model.isLoading && model.currentURL == child }
+
+        model.openInTerminal(directory)
+        await settleCompletion()
+
+        XCTAssertEqual(launcher.lastOpenedDirectory?.standardizedFileURL, directory.standardizedFileURL)
+        XCTAssertNil(model.operationErrorMessage)
+    }
+
+    /// Passing nil must keep the previous behavior of opening what the pane shows.
+    func testFallsBackToTheDirectoryOnScreen() async throws {
+        let child = directory.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: false)
+        let model = makeModel(launcher: launcher)
+        try await waitForPane { !model.isLoading }
+        model.navigate(to: child)
+        try await waitForPane { !model.isLoading && model.currentURL == child }
+
+        model.openInTerminal(nil)
+        await settleCompletion()
+
+        XCTAssertEqual(launcher.lastOpenedDirectory?.standardizedFileURL, child.standardizedFileURL)
+    }
+
+    func testReportsARequestedDirectoryThatDoesNotExist() async throws {
+        let missing = directory.appendingPathComponent("Gone", isDirectory: true)
+        let model = makeModel(launcher: launcher)
+        try await waitForPane { !model.isLoading }
+
+        model.openInTerminal(missing)
+        await settleCompletion()
+
+        XCTAssertTrue(launcher.openedDirectories.isEmpty, "No terminal may be launched for a folder that is gone")
+        XCTAssertEqual(
+            model.operationErrorMessage,
+            TerminalLauncherError.directoryUnavailable.localizedDescription
         )
     }
 }

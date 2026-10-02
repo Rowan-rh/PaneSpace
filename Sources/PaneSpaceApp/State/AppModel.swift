@@ -15,6 +15,9 @@ final class AppModel: ObservableObject {
     @Published var activePane: PaneSlot
     @Published var sidebarSelection: SidebarLocation.ID?
     @Published var isCreatingFolder = false
+    /// The folder the pending new-folder sheet is aimed at, or nil when it was opened without a
+    /// folder of its own and the pane's own current folder should be used.
+    @Published private(set) var pendingNewFolderDirectory: URL?
     @Published var isShowingSettings = false
     @Published private(set) var locationEditRequest = 0
     @Published private(set) var searchFocusRequest = 0
@@ -202,8 +205,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func requestNewFolder() {
+    /// Asks for the new-folder naming sheet. `directory` is the folder the command was aimed at,
+    /// which in the column browser is the column the user clicked rather than the folder the
+    /// address bar shows. It is held here because the sheet is presented by a view that only knows
+    /// about `AppModel`, while the creation itself belongs to the pane.
+    func requestNewFolder(in directory: URL? = nil) {
+        pendingNewFolderDirectory = directory
         isCreatingFolder = true
+    }
+
+    /// The folder `pendingNewFolderDirectory` was aimed at, or nil when the naming sheet was
+    /// opened without one. Views pass this to `createFolder(named:in:)` when the sheet is submitted.
+    func takePendingNewFolderDirectory() -> URL? {
+        defer { pendingNewFolderDirectory = nil }
+        return pendingNewFolderDirectory
     }
 
     func toggleSecondPane() {

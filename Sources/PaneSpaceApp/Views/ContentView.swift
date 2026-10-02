@@ -113,7 +113,10 @@ struct ContentView: View {
                 .accessibilityLabel("Settings")
             }
         }
-        .sheet(isPresented: $appModel.isCreatingFolder) {
+        .sheet(isPresented: $appModel.isCreatingFolder, onDismiss: {
+            // Cancel must not leave the target behind for the next command to pick up by accident.
+            _ = appModel.takePendingNewFolderDirectory()
+        }) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Create a folder")
                     .font(.headline)
@@ -125,7 +128,10 @@ struct ContentView: View {
                         appModel.isCreatingFolder = false
                     }
                     Button("Create") {
-                        appModel.activePaneModel.createFolder(named: newFolderName)
+                        appModel.activePaneModel.createFolder(
+                            named: newFolderName,
+                            in: appModel.takePendingNewFolderDirectory()
+                        )
                         appModel.isCreatingFolder = false
                         newFolderName = "New Folder"
                     }
