@@ -17,6 +17,12 @@ struct PaneSpaceApp: App {
             ContentView()
                 .environmentObject(appModel)
                 .frame(minWidth: 1_000, minHeight: 640)
+                .task {
+                    // The update schedule starts with the first window. It checks immediately and
+                    // then once a day, and does nothing when automatic checks are off or the build
+                    // carries no version to compare.
+                    appModel.updates.start()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1_180, height: 760)

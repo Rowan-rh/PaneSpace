@@ -55,6 +55,8 @@ enum PaneSpacePreferences {
         "preferredTerminal",
         "preferredEditor",
         "betaUpdates",
+        "automaticallyCheckForUpdates",
+        "skippedUpdateVersion",
         "diagnosticLogging",
         "appSession",
         "workspaceShortcuts",

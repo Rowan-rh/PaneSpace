@@ -59,6 +59,24 @@ Swift Package 会处理源代码构建所需的本地化资源。`scripts/build-
 
 当前 `FileProviding` 协议保持精简并以异步方式工作。本地 actor 将阻塞的 `FileManager` 调用隔离在主线程之外。首个远程 Provider 上线前，应补充能力报告、进度和 Provider 级取消；不要把这些逻辑放入 SwiftUI 视图。
 
+## 更新检查
+
+应用启动后会向 GitHub Releases 查询是否有新版本，失败时静默，只在日志中留下一条不含 URL 参数和路径的记录。当前版本取自 `CFBundleShortVersionString`；`swift run` 这类未打包的运行没有该键，因此不会发起检查。
+
+实机验证横幅时，可以用一个环境变量覆盖当前版本，例如：
+
+```bash
+PANESPACE_UPDATE_FAKE_VERSION=0.0.1 swift run PaneSpace
+```
+
+该值只影响“当前版本”，发布版本号仍以 `scripts/build-app.sh` 中的 `CFBundleShortVersionString` 为准。相关偏好为 `automaticallyCheckForUpdates`（默认开启）、`betaUpdates` 和 `skippedUpdateVersion`。
+
+`UpdateModel` 观察注入的 `UserDefaults`（`UserDefaults.didChangeNotification`），所以无论偏好是被 `@AppStorage`、`Binding` 还是直接 `defaults.set(...)` 写入，模型都会做出同样的响应：切换 Beta 会取消进行中的检查并清空旧频道的答案，关闭自动检查会同时停掉调度和在途检查。`automaticallyChecks` 和 `includesPrereleases` 是 `@Published` 属性，绑定时直接用它们本身即可，不需要额外的 `objectWillChange`：
+
+```swift
+SettingsToggle("Include beta updates", isOn: $model.includesPrereleases)
+```
+
 ## 界面验证清单
 
 - 启动生成的应用包。

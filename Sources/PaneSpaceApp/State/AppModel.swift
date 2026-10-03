@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var transferQueue = FileTransferQueueModel()
     let workspaceShortcuts: WorkspaceShortcutsModel
     let operationHistory: OperationHistoryModel
+    let updates: UpdateModel
     @Published var isShowingOperationHistory = false
     @Published private(set) var isUndoing = false
     private let undoService: OperationUndoService
@@ -45,13 +46,17 @@ final class AppModel: ObservableObject {
         defaults: UserDefaults = .standard,
         operationHistory: OperationHistoryModel? = nil,
         undoService: OperationUndoService = OperationUndoService(),
-        filePasteboard: FilePasteboard? = nil
+        filePasteboard: FilePasteboard? = nil,
+        updates: UpdateModel? = nil
     ) {
         self.defaults = defaults
         self.undoService = undoService
         self.filePasteboard = filePasteboard ?? FilePasteboard()
         self.operationHistory = operationHistory ?? OperationHistoryModel()
+        self.updates = updates ?? UpdateModel(defaults: defaults)
         workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
+        // Bound before the observation below so the sink sees the same instance.
+        let updateModel = self.updates
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
         let downloads = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? home
@@ -130,6 +135,9 @@ final class AppModel: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &paneObservationCancellables)
         workspaceShortcuts.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &paneObservationCancellables)
+        updateModel.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &paneObservationCancellables)
         syncDirectoryObservation()
