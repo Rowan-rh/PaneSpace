@@ -46,6 +46,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     private var operationTask: Task<Void, Never>?
     private var directoryObservers: [URL: LocalDirectoryObserver] = [:]
     private let pathResolver = LocalPathResolver()
+    /// Kept injectable so a pane can be exercised without launching an application.
+    private let terminalLauncher: TerminalLauncher
     private var observesDirectories = false
     private var hasPendingDirectoryLoad = false
     private var selectionURLToRestoreAfterRefresh: URL?
@@ -66,7 +68,8 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     init(
         url: URL = FileManager.default.homeDirectoryForCurrentUser,
         provider: FileProviding = LocalFileProvider(),
-        session: BrowserPaneSession? = nil
+        session: BrowserPaneSession? = nil,
+        terminalLauncher: TerminalLauncher = TerminalLauncher()
     ) {
         let fallbackTab = BrowserTab(url: url)
         let restoredTabs = if let session, !session.tabs.isEmpty {
@@ -81,6 +84,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             self.activeTabID = restoredTabs[0].id
         }
         self.provider = provider
+        self.terminalLauncher = terminalLauncher
         self.viewMode = session?.viewMode ?? BrowserViewMode(
             rawValue: UserDefaults.standard.string(forKey: "defaultViewMode") ?? "list"
         ) ?? .list
@@ -867,9 +871,14 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         loadCurrentDirectory()
     }
 
-    func createFolder(named name: String) {
+    /// Creates a folder called `name`.
+    ///
+    /// The target is the folder this pane shows unless `directory` is given. A context menu in the
+    /// column browser passes the column the user clicked, because the folder the address bar shows
+    /// is the deepest open column and is not necessarily the column that was clicked.
+    func createFolder(named name: String, in directory: URL? = nil) {
         guard !isPerformingOperation else { return }
-        let directory = currentURL
+        let directory = (directory ?? currentURL).standardizedFileURL
         let provider = provider
         beginOperation()
         operationTask = Task {
@@ -1056,6 +1065,30 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     func reveal(_ targets: [FileItem]) {
         guard !targets.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.url))
+    }
+
+    /// Opens a folder in a terminal. The target is the folder this pane shows unless `directory`
+    /// is given, which is what a context menu in the column browser passes for the clicked column.
+    /// It is never the selection: a terminal session has to start somewhere the user can see, and
+    /// the address bar and the paste target already agree on that folder.
+    func openInTerminal(_ directory: URL? = nil) {
+        let directory = (directory ?? currentURL).standardizedFileURL
+        // The pane can still be pointed at a folder that was removed or unmounted after it loaded,
+        // and launching a terminal there would fail with a message the user cannot act on.
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            operationErrorMessage = TerminalLauncherError.directoryUnavailable.localizedDescription
+            return
+        }
+        operationErrorMessage = nil
+        terminalLauncher.open(directory) { [weak self] identifier in
+            guard let self, identifier == nil else { return }
+            // A nil identifier means no terminal was found or the launch was refused; the two are
+            // told apart by whether a terminal is installed at all.
+            let error: TerminalLauncherError = terminalLauncher.availableTerminalIdentifier() == nil
+                ? .noTerminalAvailable
+                : .launchFailed
+            self.operationErrorMessage = error.localizedDescription
+        }
     }
 
     func setSort(_ newSort: FileSort) {

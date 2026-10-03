@@ -167,12 +167,23 @@ struct BrowserPaneView: View {
                     )
                     .allowsHitTesting(false)
                 } else if model.visibleItems.isEmpty {
+                    // This branch is the one the list above cannot serve: the list is transparent
+                    // while there is nothing to list, and SwiftUI does not hit-test transparent
+                    // views, so both its row menu and the container's menu go unanswered here. The
+                    // empty view therefore carries the folder's own commands itself, and takes hit
+                    // testing so a right-click on it reaches them. The error state above keeps
+                    // passing the click through: a folder that could not be read must not offer to
+                    // create something in it.
                     ContentUnavailableView(
                         L10n.text(model.searchText.isEmpty ? "Empty folder" : "No results"),
                         systemImage: model.searchText.isEmpty ? "folder" : "magnifyingglass",
                         description: Text(L10n.text(model.searchText.isEmpty ? "There are no items here." : "Try another search term."))
                     )
-                    .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        PaneBackgroundActionsMenu(model: model, slot: slot)
+                    }
                 }
             }
         } else {
@@ -683,12 +694,15 @@ private struct PathBarView: View {
 
     @ViewBuilder
     private var actionMenuItems: some View {
-        Button("New Folder") { appModel.requestNewFolder() }
+        // The slot travels with the command: this menu belongs to one pane, but the naming sheet
+        // is created against the active pane, so a request from an inactive one has to name it.
+        Button("New Folder") { appModel.requestNewFolder(from: slot) }
+            .disabled(model.isPerformingOperation)
         Button("Show in Finder") { model.revealSelectionInFinder() }
             .disabled(model.selectedItems.isEmpty)
         Divider()
-        Button("Open in Terminal — Planned") {}
-            .disabled(true)
+        Button("Open in Terminal") { model.openInTerminal() }
+            .disabled(model.isPerformingOperation)
         Button("Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(model.currentURL.path, forType: .string)
@@ -930,6 +944,12 @@ private struct ColumnView: View {
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
+        // The background of a column offers the commands for the folder it holds. It is attached to
+        // the column rather than to its rows, so each item keeps the menu it already had, and it
+        // also covers the empty-column case, which is the one users reach for most.
+        .contextMenu {
+            PaneBackgroundActionsMenu(model: model, slot: slot, directory: column.directory)
+        }
     }
 }
 
@@ -1042,6 +1062,13 @@ private struct FileListView: View {
                     return .handled
                 }
         }
+        // SwiftUI only invokes the selection-aware menu above when the click lands on a row, so the
+        // empty-ids branch of it can never run and the space below the last row has no menu at all.
+        // This menu sits on the container instead, which is what the empty area belongs to; the rows
+        // keep the menu they already had because that one is closer to them.
+        .contextMenu {
+            PaneBackgroundActionsMenu(model: model, slot: slot)
+        }
     }
 
     private var list: some View {
@@ -1062,7 +1089,9 @@ private struct FileListView: View {
             }
         }
         // The selection-aware menu targets the whole selection when the clicked row is part of
-        // it, and opens the targets on double-click.
+        // it, and opens the targets on double-click. The empty space below the last row is not part
+        // of this menu: SwiftUI never calls it for a click that misses every row, which is why the
+        // commands for the folder on screen live on the container in `body` instead.
         .contextMenu(forSelectionType: FileItem.ID.self) { ids in
             let targets = model.items(for: ids)
             if !targets.isEmpty {
@@ -1101,6 +1130,26 @@ private func currentSelectionModifier() -> BrowserPaneModel.SelectionModifier {
     if flags.contains(.command) { return .toggle }
     if flags.contains(.shift) { return .range }
     return .none
+}
+
+/// The commands a right-click on empty space offers.
+///
+/// They act on a folder rather than on a selection, so the target is passed explicitly: the column
+/// the user clicked in the column browser, and nothing in the list browser, where the folder on
+/// screen is the only folder the user can see. The pane travels with the request because a context
+/// menu does not make its pane active, while the naming sheet is created against the active pane.
+private struct PaneBackgroundActionsMenu: View {
+    @EnvironmentObject private var appModel: AppModel
+    @ObservedObject var model: BrowserPaneModel
+    let slot: PaneSlot
+    var directory: URL?
+
+    var body: some View {
+        Button("New Folder") { appModel.requestNewFolder(in: directory, from: slot) }
+            .disabled(model.isPerformingOperation)
+        Button("Open in Terminal") { model.openInTerminal(directory) }
+            .disabled(model.isPerformingOperation)
+    }
 }
 
 private struct FileItemActionsMenu: View {
