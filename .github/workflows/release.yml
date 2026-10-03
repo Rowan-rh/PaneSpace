@@ -99,13 +99,18 @@ jobs:
           CERT_PASSWORD: ${{ secrets.PANESPACE_CERT_P12_PASSWORD }}
         run: |
           set -euo pipefail
+          # Fixed path, not an output: the cleanup step must be able to remove
+          # the keychain even when this step fails part-way through.
           keychain="$RUNNER_TEMP/panespace-signing.keychain-db"
           p12="$RUNNER_TEMP/panespace-signing.p12"
           cert="$RUNNER_TEMP/panespace-signing-cert.pem"
           umask 077
           # The runner is ephemeral, so a random per-run keychain password is
-          # simpler and safer than storing another secret.
+          # simpler and safer than storing another secret. Mask it before it can
+          # reach any command's error output; it is never written to GITHUB_OUTPUT
+          # because only this step needs it.
           password="$(openssl rand -base64 24 | tr -d '\n')"
+          echo "::add-mask::$password"
           printf '%s' "$CERT" | base64 --decode > "$p12"
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
@@ -119,29 +124,27 @@ jobs:
           P12_PASSWORD="$CERT_PASSWORD" openssl pkcs12 -legacy -in "$p12" \
             -passin env:P12_PASSWORD -nokeys -clcerts -out "$cert"
           rm -f "$p12"
-          # A self-signed certificate is untrusted by default, so codesign refuses
-          # to use it until it is explicitly trusted inside this keychain.
-          security add-trusted-cert -r trustRoot -k "$keychain" "$cert"
-          # -nameopt sep_multiline puts each RDN on its own line, so the CN can be
-          # read reliably. RFC2253's single-line form reverses the RDN order and
-          # would yield the wrong value.
-          identity="$(openssl x509 -in "$cert" -noout -subject -nameopt sep_multiline \
-            | sed -nE 's/^[[:space:]]*CN=//p' | head -1)"
+          # A self-signed certificate is not trusted by default, so `find-identity`
+          # reports 0 valid identities. It is addressed by SHA-1 rather than by
+          # name below, because codesign accepts a hash and needs no trust
+          # setting: verified locally, and it leaves no residue in the user
+          # trust domain that a headless runner could not clean up.
+          identity_hash="$(openssl x509 -in "$cert" -noout -fingerprint -sha1 \
+            | sed -E 's/.*=//; s/://g')"
           rm -f "$cert"
-          if [[ -z "$identity" ]]; then
-            echo "::error::Could not read the certificate CN; the .p12 may not be the expected certificate"
+          if [[ -z "$identity_hash" ]]; then
+            echo "::error::Could not read the certificate SHA-1 fingerprint; the .p12 may not be the expected certificate"
             exit 1
           fi
-          if ! security find-identity -v -p codesigning "$keychain" 2>/dev/null \
-            | grep -qF "$identity"; then
-            echo "::error::No usable code-signing identity named '$identity' in the temporary keychain"
+          if ! security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" \
+            2>/dev/null | grep -qF "$identity_hash"; then
+            echo "::error::The imported certificate is not present in the temporary keychain"
             exit 1
           fi
-          echo "Signing identity available: $identity"
+          echo "Signing identity available (SHA-1 $identity_hash)"
           {
             echo "keychain=$keychain"
-            echo "password=$password"
-            echo "identity=$identity"
+            echo "identity=$identity_hash"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and sign the application
@@ -182,12 +185,14 @@ jobs:
       - name: Sign the archive and verify the signature
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          ED_PRIVATE_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
+          PANESPACE_ED25519_PRIVATE_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
           PUBLIC_KEY: ${{ steps.publickey.outputs.key }}
         run: |
           set -euo pipefail
           archive="dist/PaneSpace-$VERSION-macos-arm64.zip"
-          swift scripts/ed25519.swift sign "$archive" "$ED_PRIVATE_KEY" "$archive.sig"
+          # The private key is passed through the environment, never argv, so it
+          # does not appear in the runner's process list.
+          swift scripts/ed25519.swift sign "$archive" "$archive.sig"
           # Verify against the committed public key, so a release is never
           # published with a signature no installed PaneSpace could check.
           swift scripts/ed25519.swift verify "$archive" \
@@ -206,13 +211,17 @@ jobs:
 
       - name: Delete the temporary keychain
         if: always()
-        env:
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
         run: |
-          set -euo pipefail
-          if [[ -n "${KEYCHAIN:-}" ]]; then
-            security delete-keychain "$KEYCHAIN" || true
+          set -uo pipefail
+          # Fixed paths again, so cleanup works even if the import step failed
+          # before it could record any output.
+          rm -f "$RUNNER_TEMP/panespace-signing.p12" \
+                "$RUNNER_TEMP/panespace-signing-cert.pem"
+          if [[ -f "$RUNNER_TEMP/panespace-signing.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/panespace-signing.keychain-db" || true
             echo "Temporary keychain removed"
+          else
+            echo "No temporary keychain to remove"
           fi
 
       - name: Upload release assets for publishing
@@ -273,8 +282,14 @@ jobs:
           set -euo pipefail
           archive="PaneSpace-$VERSION-macos-arm64.zip"
           assets=("dist/$archive" "dist/$archive.sha256" "dist/$archive.sig")
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then
-            echo "Release for $TAG already exists; appending assets"
+          # `gh release view` finds drafts as well as published releases, while
+          # GET /releases/tags/{tag} returns published ones only. Without this,
+          # re-running the workflow for the same tag would create a second,
+          # duplicate draft. It exits 0 when the release exists and 1 when it does
+          # not, so probe it and branch on that.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft >/dev/null 2>&1; then
+            echo "Release for $TAG already exists (draft or published); appending assets"
             for asset in "${assets[@]}"; do
               gh release upload "$TAG" "$asset" --clobber
             done

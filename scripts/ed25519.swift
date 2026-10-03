@@ -5,11 +5,13 @@
 // OpenSSL version shipped on the runner. Signatures are raw 64-byte Ed25519
 // signatures, base64 encoded, matching the Sparkle `EdDSA` file format.
 //
-//   ed25519.swift sign   <file> <private-key-base64-seed> <signature-out>
+//   ed25519.swift sign   <file> <signature-out>
 //   ed25519.swift verify <file> <signature-base64> <public-key-base64>
 //
-// The private key is read from the environment (PANESPACE_ED25519_PRIVATE_KEY) or
-// from the argument position shown above, and is never printed.
+// The private key is read only from the PANESPACE_ED25519_PRIVATE_KEY environment
+// variable, never from argv: a process argument is visible to every other process
+// on the machine and would show up in the workflow's process list. It is never
+// printed either.
 
 import CryptoKit
 import Foundation
@@ -30,7 +32,11 @@ func base64Data(_ string: String, label: String) -> Data {
 /// written by `generate-signing-identity.sh`. Anything else is rejected rather
 /// than guessed at, so a mangled secret fails the release instead of producing an
 /// unverifiable signature.
-func privateKey(fromBase64 value: String) throws -> Curve25519.Signing.PrivateKey {
+func privateKey() throws -> Curve25519.Signing.PrivateKey {
+    guard let value = ProcessInfo.processInfo.environment["PANESPACE_ED25519_PRIVATE_KEY"],
+          !value.isEmpty else {
+        fail("PANESPACE_ED25519_PRIVATE_KEY is not set")
+    }
     let data = base64Data(value, label: "private key")
     guard data.count == 32 else {
         fail("private key must be a 32-byte Ed25519 seed, got \(data.count) bytes")
@@ -40,19 +46,19 @@ func privateKey(fromBase64 value: String) throws -> Curve25519.Signing.PrivateKe
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: ed25519.swift sign <file> <key-b64> <sig-out> | verify <file> <sig-b64> <pub-b64>")
+    fail("usage: ed25519.swift sign <file> <sig-out> | verify <file> <sig-b64> <pub-b64>")
 }
 
 switch command {
 case "sign":
-    guard arguments.count == 4 else {
-        fail("usage: ed25519.swift sign <file> <key-b64> <sig-out>")
+    guard arguments.count == 3 else {
+        fail("usage: ed25519.swift sign <file> <sig-out>")
     }
-    let (file, key, output) = (arguments[1], arguments[2], arguments[3])
+    let (file, output) = (arguments[1], arguments[2])
     guard let contents = FileManager.default.contents(atPath: file) else {
         fail("cannot read \(URL(fileURLWithPath: file).lastPathComponent)")
     }
-    let signature = try privateKey(fromBase64: key).signature(for: Data(contents))
+    let signature = try privateKey().signature(for: Data(contents))
     do {
         try signature.base64EncodedString().write(toFile: output, atomically: true, encoding: .utf8)
     } catch {

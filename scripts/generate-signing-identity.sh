@@ -5,10 +5,10 @@
 #   scripts/generate-signing-identity.sh <output-directory>
 #
 # Produces, in <output-directory> (created if missing, mode 700):
-#   panespace-signing.p12    10-year self-signed code-signing certificate
-#   panespeed-signing-pass.txt   random .p12 password, mode 600
-#   ed25519-private-key.txt  base64 32-byte Ed25519 seed, mode 600
-#   ed25519-public-key.txt   base64 32-byte Ed25519 public key, mode 644
+#   panespace-signing.p12      10-year self-signed code-signing certificate
+#   panespace-signing-pass.txt random .p12 password, mode 600
+#   ed25519-private-key.txt    base64 32-byte Ed25519 seed, mode 600
+#   ed25519-public-key.txt     base64 32-byte Ed25519 public key, mode 644
 #
 # The script prints which GitHub Actions secrets to create. It does not create
 # them, does not upload anything, and never prints the password or private key.
@@ -78,25 +78,24 @@ fi
 
 # OpenSSL 3 writes PKCS#12 with AES-256-CBC/PBES2, which `security import`
 # rejects; -legacy emits the classic algorithms the macOS keychain understands.
-openssl pkcs12 -export -legacy \
+# -passout env: keeps the password out of argv, where any other process on the
+# machine could read it.
+P12_PASSWORD="$password" openssl pkcs12 -export -legacy \
     -inkey "$tmp_dir/key.pem" -in "$tmp_dir/cert.pem" \
-    -out "$p12_path" -passout "pass:$password" \
+    -out "$p12_path" -passout env:P12_PASSWORD \
     2>/dev/null || die "failed to export the .p12 (OpenSSL 3 needs -legacy)"
 
 # Prove the .p12 is importable before printing success: an unusable .p12 would
-# only fail later inside CI.
-if ! security import "$p12_path" -k "$tmp_dir/probe.keychain-db" -P "$password" \
+# only fail later inside CI. Create the probe keychain first, then import into it.
+probe_keychain="$tmp_dir/probe.keychain-db"
+security create-keychain -p "$password" "$probe_keychain" >/dev/null 2>&1 \
+    || die "failed to create a temporary probe keychain"
+security unlock-keychain -p "$password" "$probe_keychain" >/dev/null 2>&1
+if ! security import "$p12_path" -k "$probe_keychain" -P "$password" \
     -T /usr/bin/codesign -A >/dev/null 2>&1; then
-    # A missing probe keychain is expected; create one and retry once.
-    security create-keychain -p "$password" "$tmp_dir/probe.keychain-db" \
-        >/dev/null 2>&1
-    security unlock-keychain -p "$password" "$tmp_dir/probe.keychain-db" \
-        >/dev/null 2>&1
-    security import "$p12_path" -k "$tmp_dir/probe.keychain-db" -P "$password" \
-        -T /usr/bin/codesign -A >/dev/null 2>&1 \
-        || die "the .p12 could not be imported by security(1); check the OpenSSL version"
+    die "the .p12 could not be imported by security(1); check the OpenSSL version"
 fi
-security delete-keychain "$tmp_dir/probe.keychain-db" >/dev/null 2>&1
+security delete-keychain "$probe_keychain" >/dev/null 2>&1
 
 # Ed25519 update-signing key, generated through CryptoKit so the format matches
 # what scripts/ed25519.swift and Sparkle expect (raw seed/public key, base64).
@@ -114,14 +113,18 @@ fi
 
 print "PaneSpace signing material written to: $output_dir"
 print ""
-print "Next steps (secrets are NOT created by this script):"
-print "  1. Add repository secret PANESPACE_CERT_P12_BASE64"
-print "     = base64 -i < '$p12_path' | tr -d '\\n'"
-print "  2. Add repository secret PANESPACE_CERT_P12_PASSWORD"
-print "     = contents of '$password_path'"
-print "  3. Add repository secret PANESPACE_ED25519_PRIVATE_KEY"
-print "     = contents of '$private_key_path'"
-print "  4. Commit the PUBLIC key to scripts/update-public-ed25519.txt:"
-print "     $public_key"
+print "Next steps. These commands pipe the files straight into gh, so the secret"
+print "never lands in your shell history or on the clipboard:"
+print ""
+print "  gh secret set PANESPACE_CERT_P12_BASE64 --repo Rowan-rh/PaneSpace \\"
+# zsh's print interprets backslash escapes, so the literal \n in tr must be doubled.
+print "    < <(base64 -i '$p12_path' | tr -d '\\n')"
+print "  gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \\"
+print "    < '$password_path'"
+print "  gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \\"
+print "    < '$private_key_path'"
+print ""
+print "  Then commit the PUBLIC key to scripts/update-public-ed25519.txt:"
+print "    $public_key"
 print ""
 print "Keep the directory out of version control and delete it once the secrets exist."

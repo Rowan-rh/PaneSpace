@@ -2,13 +2,32 @@
 # Derive CFBundleShortVersionString and CFBundleVersion from a release tag.
 #
 # The tag is the single source of truth: `v0.2.0` -> 0.2.0 / 20099, `v0.2.0-beta.1`
-# -> 0.2.0-beta.1 / 20001. Build numbers must be deterministic and monotonically
-# increasing because Sparkle compares them lexicographically on CFBundleVersion:
+# -> 0.2.0-beta.1 / 20030. Build numbers must be deterministic and monotonically
+# increasing, because Sparkle compares the numeric segments of CFBundleVersion
+# (not the string lexicographically) to decide whether an update is newer:
 #
-#   MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 + (99 for final, 1-98 for prerelease)
+#   MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 + channel
+#
+# The channel segment is what orders the prerelease track. Reusing one number for
+# every channel (as an earlier revision did) collides: `alpha.5` and `beta.5` both
+# produced 20005, and `rc.1` produced 20001, which sorts *below* `beta.2` (20002),
+# so a user on beta.2 would never be offered the rc. Each channel therefore gets
+# its own band inside the 0-99 segment, and the ordering the bands must satisfy is:
+#
+#   alpha.1-29  -> +1  .. +29
+#   beta.1-29   -> +30 .. +58
+#   rc.1-38     -> +60 .. +97
+#   final       -> +99
+#
+# so alpha.29 < beta.1 < beta.29 < rc.1 < rc.38 < final. The gaps at 59 and 98 are
+# deliberate spacers that keep a mistaken tag from landing on a live build number.
+#
+# MINOR and PATCH must stay below 100, otherwise the next version's channel band
+# would overflow into it and two different releases would derive the same build
+# number (v0.1.100 and v0.2.0 both yielded 20099).
 #
 # Usage: version-from-tag.sh <tag>
-# Prints two lines: "<short-version> <build-number>".
+# Prints one line: "<short-version> <build-number>".
 set -euo pipefail
 
 usage() {
@@ -39,10 +58,26 @@ minor="${match[2]}"
 patch="${match[3]}"
 prerelease="${match[5]}"
 
+# Reject MINOR or PATCH >= 100: it spills into the next segment and makes the
+# channel band meaningless.
+if (( minor > 99 || patch > 99 )); then
+    print -u2 "error: MINOR and PATCH must be 0-99 in tag '$tag' (got $minor.$patch)"
+    print -u2 "       a value >= 100 overflows the build-number segment and collides with another release"
+    exit 1
+fi
+
+# 0.0.x would derive a build number below or equal to the current 0.1.2 build (3),
+# so an installed client would never be offered it as an update.
+if (( major == 0 && minor == 0 )); then
+    print -u2 "error: tag '$tag' derives a build number at or below the current release"
+    print -u2 "       0.0.x starts at build 1 and sorts below the shipped 0.1.2 (build 3)"
+    exit 1
+fi
+
 if [[ -z "$prerelease" ]]; then
-    # Final release gets the highest slot so it sorts above every prerelease of
-    # the same MAJOR.MINOR.PATCH and above the previous final build.
-    build=$(( major * 1000000 + minor * 10000 + patch * 100 + 99 ))
+    # The final release takes the top of the band, so it sorts above every
+    # prerelease of the same MAJOR.MINOR.PATCH.
+    channel=99
 else
     # Prerelease identifier must be <alpha|beta|rc>.<n>; anything else would make
     # the ordering ambiguous, so reject it instead of guessing.
@@ -51,13 +86,22 @@ else
         print -u2 "       only <alpha|beta|rc>.<n> is allowed (n >= 1), e.g. v0.2.0-beta.1"
         exit 1
     fi
+    prerelease_id="${match[1]}"
     prerelease_number="${match[2]}"
-    if (( prerelease_number > 98 )); then
-        print -u2 "error: prerelease number $prerelease_number leaves no room for the final build"
-        print -u2 "       prereleases of the same version must use 1-98"
+    # Per-channel band base. Limits keep every band below the next one.
+    case "$prerelease_id" in
+        alpha) band=1; limit=29 ;;
+        beta)  band=30; limit=29 ;;
+        rc)    band=60; limit=38 ;;
+    esac
+    if (( prerelease_number > limit )); then
+        print -u2 "error: $prerelease_id.$prerelease_number is out of range in tag '$tag'"
+        print -u2 "       $prerelease_id allows 1-$limit (bands must not overlap: alpha 1-29, beta 1-29, rc 1-38)"
         exit 1
     fi
-    build=$(( major * 1000000 + minor * 10000 + patch * 100 + prerelease_number ))
+    channel=$(( band + prerelease_number - 1 ))
 fi
+
+build=$(( major * 1000000 + minor * 10000 + patch * 100 + channel ))
 
 print "$version $build"
