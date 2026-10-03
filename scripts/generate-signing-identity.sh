@@ -111,18 +111,19 @@ if [[ ! "$public_key" =~ '^[A-Za-z0-9+/]{43}=$' ]]; then
     die "generated public key is not a base64 32-byte Ed25519 key"
 fi
 
+# -r keeps the backslashes in the commands below literal. Without it zsh's print
+# interprets the escapes and the emitted `tr -d '\n'` is split across two lines.
 print "PaneSpace signing material written to: $output_dir"
 print ""
 print "Next steps. These commands pipe the files straight into gh, so the secret"
 print "never lands in your shell history or on the clipboard:"
 print ""
-print "  gh secret set PANESPACE_CERT_P12_BASE64 --repo Rowan-rh/PaneSpace \\"
-# zsh's print interprets backslash escapes, so the literal \n in tr must be doubled.
-print "    < <(base64 -i '$p12_path' | tr -d '\\n')"
-print "  gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \\"
-print "    < '$password_path'"
-print "  gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \\"
-print "    < '$private_key_path'"
+print -r -- "  gh secret set PANESPACE_CERT_P12_BASE64 --repo Rowan-rh/PaneSpace \\"
+print -r -- "    < <(base64 -i '$p12_path' | tr -d '\n')"
+print -r -- "  gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \\"
+print -r -- "    < '$password_path'"
+print -r -- "  gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \\"
+print -r -- "    < '$private_key_path'"
 print ""
 print "  Then commit the PUBLIC key to scripts/update-public-ed25519.txt:"
 print "    $public_key"

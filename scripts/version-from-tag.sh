@@ -66,11 +66,11 @@ if (( minor > 99 || patch > 99 )); then
     exit 1
 fi
 
-# 0.0.x would derive a build number below or equal to the current 0.1.2 build (3),
-# so an installed client would never be offered it as an update.
+# 0.0.x is semantically below the shipped 0.1.2, so releasing it would be
+# confusing regardless of the build number it derives.
 if (( major == 0 && minor == 0 )); then
-    print -u2 "error: tag '$tag' derives a build number at or below the current release"
-    print -u2 "       0.0.x starts at build 1 and sorts below the shipped 0.1.2 (build 3)"
+    print -u2 "error: tag '$tag' is below the current release"
+    print -u2 "       0.0.x is older than the published 0.1.2 and must not be released"
     exit 1
 fi
 
