@@ -1,0 +1,156 @@
+# 发布流程
+
+本文说明 PaneSpace 的签名与发布流程。签名使用**免费的自签名代码签名证书**，不购买 Apple Developer Program，也不做公证。
+
+## 一次性准备
+
+### 1. 生成签名材料
+
+在自己的 Mac 上运行（不要在 CI 或共享机器上运行）：
+
+```bash
+./scripts/generate-signing-identity.sh ~/PaneSpace-signing
+```
+
+脚本会在指定目录生成（目录权限 700，文件权限 600）：
+
+| 文件 | 内容 | 去向 |
+| --- | --- | --- |
+| `panespace-signing.p12` | 10 年期自签名代码签名证书 | secret `PANESPACE_CERT_P12_BASE64` |
+| `panespace-signing-pass.txt` | 随机生成的 .p12 密码 | secret `PANESPACE_CERT_P12_PASSWORD` |
+| `ed25519-private-key.txt` | Ed25519 私钥（32 字节 seed，base64） | secret `PANESPACE_ED25519_PRIVATE_KEY` |
+| `ed25519-public-key.txt` | Ed25519 公钥（32 字节，base64） | 提交到 `scripts/update-public-ed25519.txt` |
+
+证书的关键参数：`CN=PaneSpace Self-Signed`、`extendedKeyUsage=codeSigning`、`keyUsage=digitalSignature`、有效期 10 年。生成脚本会校验这些扩展，并实际调用 `security import` 确认 .p12 可用。
+
+**私钥不会进入仓库，也不会进入任何 agent 的工作目录。** 脚本拒绝写入仓库内部。
+
+### 2. 创建仓库 secrets
+
+生成脚本结束时会打印现成的命令，直接把文件管道给 `gh`，secret 不会进入 shell 历史或剪贴板：
+
+```bash
+gh secret set PANESPACE_CERT_P12_BASE64 --repo Rowan-rh/PaneSpace \
+  < <(base64 -i ~/PaneSpace-signing/panespace-signing.p12 | tr -d '\n')
+gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \
+  < ~/PaneSpace-signing/panespace-signing-pass.txt
+gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \
+  < ~/PaneSpace-signing/ed25519-private-key.txt
+```
+
+注意 `base64 -i` 的参数是**文件名**，不能写成 `base64 -i < file`（那样会报 `option requires an argument -- i`）。
+
+### 3. 提交公钥
+
+公钥是公开值，提交到 `scripts/update-public-ed25519.txt`（仓库内当前是占位符）：
+
+```bash
+cat ~/PaneSpace-signing/ed25519-public-key.txt > scripts/update-public-ed25519.txt
+```
+
+这个公钥会被写入应用包 Info.plist 的 `SUPublicEDKey`，应用内更新时用它验签。**公钥一旦提交就不能再改**：改了之后，旧版本应用无法验证新版本的签名。
+
+提交后确认 workflows 显示检查通过（`actionlint` 见下）：
+
+```bash
+actionlint .github/workflows/*.yml
+```
+
+### 4. 清理本地材料
+
+```bash
+rm -rf ~/PaneSpace-signing
+```
+
+## 每次发布
+
+1. 确认 `develop` 已合入 `main` 且 CI 通过。
+2. 打 tag（**tag 是版本的唯一来源**）：
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+3. `push` tag 触发 `.github/workflows/release.yml`：跑测试 → 从 tag 派生版本 → 在临时 keychain 中导入证书 → 签名构建 → 校验签名 → 打包 → 生成 `.sha256` 和 `.sig` 并验签 → 上传到对应 Release。Release 不存在时创建 **draft**，tag 含 `-` 时标记为 prerelease。已有的 draft 或正式 Release 会**追加**（覆盖同名）资产，所以同一个 tag 重跑不会产生重复 draft。
+4. 在 GitHub 上检查 draft Release 的发行说明，**手动点击发布**。
+
+发布过程全在 CI 上完成，本机不生成 keychain，也不需要本地清理。
+
+## 版本与构建号
+
+`scripts/version-from-tag.sh` 从 tag 派生 `CFBundleShortVersionString` 和 `CFBundleVersion`：
+
+```text
+MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 + channel
+```
+
+Sparkle 按 `CFBundleVersion` 的**各段数值**比较新旧（不是按字符串字典序），所以最后一段 `channel` 负责给预发布通道排序。每个通道占一段独立区间，互不重叠：
+
+| 通道 | channel 取值 |
+| --- | --- |
+| `alpha.1` – `alpha.29` | +1 – +29 |
+| `beta.1` – `beta.29` | +30 – +58 |
+| `rc.1` – `rc.38` | +60 – +97 |
+| 正式版 | +99 |
+
+| tag | CFBundleShortVersionString | CFBundleVersion |
+| --- | --- | --- |
+| `v0.2.0-alpha.1` | `0.2.0-alpha.1` | `20001` |
+| `v0.2.0-alpha.29` | `0.2.0-alpha.29` | `20029` |
+| `v0.2.0-beta.1` | `0.2.0-beta.1` | `20030` |
+| `v0.2.0-beta.29` | `0.2.0-beta.29` | `20058` |
+| `v0.2.0-rc.1` | `0.2.0-rc.1` | `20060` |
+| `v0.2.0-rc.38` | `0.2.0-rc.38` | `20097` |
+| `v0.2.0` | `0.2.0` | `20099` |
+
+即 `alpha.29 < beta.1 < beta.29 < rc.1 < rc.38 < 正式版`，装了 beta.2 的用户一定能收到 rc.1。59 和 98 是刻意留空的分隔位，避免误打的 tag 落在已发布过的构建号上。
+
+以下 tag 直接失败，不会产生错误版本的应用：
+
+- `MINOR` 或 `PATCH` ≥ 100（如 `v0.1.100`、`v0.99.100`）——会溢出到下一段，与其他版本撞号。
+- `0.0.x`（如 `v0.0.0`）——语义上低于已发布的 0.1.2，不允许发布。
+- 预发布号超出所属区间（如 `v0.2.0-alpha.30`、`v0.2.0-beta.30`、`v0.2.0-rc.39`）。
+- 标识不符合 `<alpha|beta|rc>.<N>`（如 `v0.2.0-beta`、`v0.2.0-preview.1`、`v0.2.0-rc.0`）。
+- 版本段数不对（`v0.2`、`v0.2.0.1`）、缺 `v` 前缀（`0.2.0`）或有前导零（`v01.2.0`）。
+
+## 本地构建
+
+本地开发流程不变。`make app` / `scripts/build-app.sh` 不设置任何环境变量时行为与之前完全一致：版本 0.1.2、构建号 3、ad-hoc 签名。
+
+需要手工验证签名构建时（身份可用证书 SHA-1 代替名字，自签名证书无需额外信任设置）：
+
+```bash
+PANESPACE_VERSION=0.2.0 \
+PANESPACE_BUILD=20099 \
+PANESPACE_SIGN_IDENTITY="PaneSpace Self-Signed" \
+PANESPACE_ED_PUBLIC_KEY="$(cat scripts/update-public-ed25519.txt)" \
+make app
+```
+
+`PANESPACE_SIGN_KEYCHAIN` 可指定临时 keychain 路径；不设置时使用系统默认 keychain 搜索列表。
+
+## 为什么需要自签名证书
+
+ad-hoc 签名的 designated requirement 等于 cdhash，即**每次构建都变**。系统据此判定「这是一个新应用」，于是每次更新后桌面、文稿、下载、可移除卷等 TCC 授权都会失效，用户必须重新授权。用固定的证书签名后，designated requirement 变成：
+
+```text
+designated => identifier "org.panespace.app" and certificate root = H"..."
+```
+
+发布 workflow 会在 designated requirement 里出现 `cdhash` 时直接失败，防止回归到 ad-hoc 状态。
+
+## 已知限制
+
+- **未公证**：应用没有 Apple 公证票据。用户**首次安装**必须在「系统设置 › 隐私与安全性」中点「仍要打开」，或 Control-点按应用选择「打开」。这不是签名失效，是 Gatekeeper 的正常行为。
+- **从 0.1.2 升级需重新授权一次**：0.1.2 是 ad-hoc 签名且没有更新器，升级到第一个证书签名的版本时会重置一次授权，之后的更新保持不变。
+- **更换或过期证书需要重新授权**：所有已安装的 PaneSpace 都会失去信任，需要用户手动重新授权。因为签名用 `--timestamp=none`，签名没有可信时间戳，证书一旦过期签名就不再有效；10 年有效期到期前需要换发新证书并重新发布，**换证书本身就会让所有用户重新授权一次**。
+- **应用内更新尚未实现**：当前阶段只完成签名与发布自动化，检查更新与应用内更新是后续阶段的工作。
+
+## 安全注意事项
+
+- 证书和私钥**不进入仓库**，只以 GitHub Actions secret 形式保存。
+- workflow 日志不打印密钥、密码或本机绝对路径。Ed25519 私钥只经环境变量传给签名脚本，不进 argv。
+- 发布 job 与构建 job 分离：上传 job 只有 `contents: write` 权限，看不到证书和私钥；上传前会重新验签并核对 SHA-256。
+- 临时 keychain 使用随机密码，密码经 `::add-mask::` 屏蔽且**不写入** `$GITHUB_OUTPUT`；keychain 与中间文件按固定路径在 job 结束时无条件删除（`if: always()`），即使导入失败也能清理。
+- 签名身份用证书 SHA-1 传入，**不调用 `security add-trusted-cert`**：自签名证书不写入任何 trust settings 域，因此不会在 runner 上留下无法清理的信任残留。

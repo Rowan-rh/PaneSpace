@@ -1,0 +1,312 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Default is read-only. Only the publish job is widened, and it never sees the
+# signing certificate or the Ed25519 private key.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          read -r version build_number < <(./scripts/version-from-tag.sh "$tag")
+          # A tag containing "-" is a prerelease by the repository convention.
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "build=$build_number"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $version (build $build_number) from tag $tag"
+
+      - name: Check signing secrets are configured
+        env:
+          CERT: ${{ secrets.PANESPACE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.PANESPACE_CERT_P12_PASSWORD }}
+          ED_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$CERT" ]] || missing+=(PANESPACE_CERT_P12_BASE64)
+          [[ -n "$CERT_PASSWORD" ]] || missing+=(PANESPACE_CERT_P12_PASSWORD)
+          [[ -n "$ED_KEY" ]] || missing+=(PANESPACE_ED25519_PRIVATE_KEY)
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing repository secret(s): ${missing[*]}"
+            exit 1
+          fi
+          echo "All signing secrets are present"
+
+      - name: Check committed Ed25519 public key
+        id: publickey
+        run: |
+          set -euo pipefail
+          key_file="scripts/update-public-ed25519.txt"
+          if [[ ! -f "$key_file" ]]; then
+            echo "::error::$key_file is missing; commit the release public key before tagging"
+            exit 1
+          fi
+          key="$(tr -d '[:space:]' < "$key_file")"
+          if [[ -z "$key" || "$key" == PLACEHOLDER* ]]; then
+            echo "::error::$key_file still holds the placeholder; replace it with the real public key"
+            exit 1
+          fi
+          if [[ ! "$key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+            echo "::error::$key_file must hold a base64 32-byte Ed25519 public key"
+            exit 1
+          fi
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "Public key present and well-formed"
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Run tests with warnings as errors
+        run: swift test -Xswiftc -warnings-as-errors
+
+      - name: Import signing certificate into a temporary keychain
+        id: keychain
+        env:
+          CERT: ${{ secrets.PANESPACE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.PANESPACE_CERT_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Fixed path, not an output: the cleanup step must be able to remove
+          # the keychain even when this step fails part-way through.
+          keychain="$RUNNER_TEMP/panespace-signing.keychain-db"
+          p12="$RUNNER_TEMP/panespace-signing.p12"
+          cert="$RUNNER_TEMP/panespace-signing-cert.pem"
+          umask 077
+          # The runner is ephemeral, so a random per-run keychain password is
+          # simpler and safer than storing another secret. Mask it before it can
+          # reach any command's error output; it is never written to GITHUB_OUTPUT
+          # because only this step needs it.
+          password="$(openssl rand -base64 24 | tr -d '\n')"
+          echo "::add-mask::$password"
+          printf '%s' "$CERT" | base64 --decode > "$p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain"
+          # The .p12 was exported with OpenSSL's -legacy algorithms, so OpenSSL 3
+          # needs -legacy to read the certificate back out.
+          P12_PASSWORD="$CERT_PASSWORD" openssl pkcs12 -legacy -in "$p12" \
+            -passin env:P12_PASSWORD -nokeys -clcerts -out "$cert"
+          rm -f "$p12"
+          # A self-signed certificate is not trusted by default, so `find-identity`
+          # reports 0 valid identities. It is addressed by SHA-1 rather than by
+          # name below, because codesign accepts a hash and needs no trust
+          # setting: verified locally, and it leaves no residue in the user
+          # trust domain that a headless runner could not clean up.
+          identity_hash="$(openssl x509 -in "$cert" -noout -fingerprint -sha1 \
+            | sed -E 's/.*=//; s/://g')"
+          rm -f "$cert"
+          if [[ -z "$identity_hash" ]]; then
+            echo "::error::Could not read the certificate SHA-1 fingerprint; the .p12 may not be the expected certificate"
+            exit 1
+          fi
+          if ! security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" \
+            2>/dev/null | grep -qF "$identity_hash"; then
+            echo "::error::The imported certificate is not present in the temporary keychain"
+            exit 1
+          fi
+          echo "Signing identity available (SHA-1 $identity_hash)"
+          {
+            echo "keychain=$keychain"
+            echo "identity=$identity_hash"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and sign the application
+        env:
+          PANESPACE_VERSION: ${{ steps.version.outputs.version }}
+          PANESPACE_BUILD: ${{ steps.version.outputs.build }}
+          PANESPACE_SIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}
+          PANESPACE_SIGN_KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          PANESPACE_ED_PUBLIC_KEY: ${{ steps.publickey.outputs.key }}
+        run: make app
+
+      - name: Verify signature and print designated requirement
+        run: |
+          set -euo pipefail
+          codesign --verify --strict --verbose=2 dist/PaneSpace.app
+          echo "--- designated requirement ---"
+          # This line must stay identical across releases: it is what keeps the
+          # user's TCC folder grants alive across updates.
+          codesign -d -r- dist/PaneSpace.app 2>/dev/null | tee requirement.txt
+          if grep -q "cdhash" requirement.txt; then
+            echo "::error::Designated requirement is cdhash-based; the signature would break on every update"
+            exit 1
+          fi
+          codesign -dvvv dist/PaneSpace.app 2>&1 \
+            | grep -E "^(Identifier|Authority|Signature|TeamIdentifier)=" || true
+
+      - name: Package the archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="PaneSpace-$VERSION-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent dist/PaneSpace.app "dist/$archive"
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+          echo "architectures: $(lipo -archs dist/PaneSpace.app/Contents/MacOS/PaneSpace)"
+          ls -la "dist/$archive" "dist/$archive.sha256"
+
+      - name: Sign the archive and verify the signature
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PANESPACE_ED25519_PRIVATE_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
+          PUBLIC_KEY: ${{ steps.publickey.outputs.key }}
+        run: |
+          set -euo pipefail
+          archive="dist/PaneSpace-$VERSION-macos-arm64.zip"
+          # The private key is passed through the environment, never argv, so it
+          # does not appear in the runner's process list.
+          swift scripts/ed25519.swift sign "$archive" "$archive.sig"
+          # Verify against the committed public key, so a release is never
+          # published with a signature no installed PaneSpace could check.
+          swift scripts/ed25519.swift verify "$archive" \
+            "$(cat "$archive.sig")" "$PUBLIC_KEY"
+          # A signature that still verified against a tampered archive would make
+          # the .sig file meaningless; confirm that it does not.
+          cp "$archive" "$archive.probe"
+          printf 'X' | dd of="$archive.probe" bs=1 seek=1024 conv=notrunc 2>/dev/null
+          if swift scripts/ed25519.swift verify "$archive.probe" \
+            "$(cat "$archive.sig")" "$PUBLIC_KEY" 2>/dev/null; then
+            echo "::error::Tampered archive still verified; the signature is not covering the file"
+            exit 1
+          fi
+          rm -f "$archive.probe"
+          echo "Signature rejects a tampered archive as expected"
+
+      - name: Delete the temporary keychain
+        if: always()
+        run: |
+          set -uo pipefail
+          # Fixed paths again, so cleanup works even if the import step failed
+          # before it could record any output.
+          rm -f "$RUNNER_TEMP/panespace-signing.p12" \
+                "$RUNNER_TEMP/panespace-signing-cert.pem"
+          if [[ -f "$RUNNER_TEMP/panespace-signing.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/panespace-signing.keychain-db" || true
+            echo "Temporary keychain removed"
+          else
+            echo "No temporary keychain to remove"
+          fi
+
+      - name: Upload release assets for publishing
+        uses: actions/upload-artifact@v7
+        with:
+          name: panespace-release-assets
+          path: |
+            dist/PaneSpace-*-macos-arm64.zip
+            dist/PaneSpace-*-macos-arm64.zip.sha256
+            dist/PaneSpace-*-macos-arm64.zip.sig
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    # Separate job so the write token and the release assets are separated from
+    # the secrets. This job never has access to the certificate or private key.
+    runs-on: macos-26
+    timeout-minutes: 15
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download release assets
+        uses: actions/download-artifact@v7
+        with:
+          name: panespace-release-assets
+          path: dist
+
+      - name: Re-verify the archive signature before publishing
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="dist/PaneSpace-$VERSION-macos-arm64.zip"
+          for asset in "$archive" "$archive.sha256" "$archive.sig"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "::error::Missing release asset $(basename "$asset")"
+              exit 1
+            fi
+          done
+          # The private key stays in the build job, so re-verify with the
+          # committed public key that every installed copy trusts.
+          swift scripts/ed25519.swift verify "$archive" \
+            "$(cat "$archive.sig")" \
+            "$(tr -d '[:space:]' < scripts/update-public-ed25519.txt)"
+          (cd dist && shasum -a 256 -c "PaneSpace-$VERSION-macos-arm64.zip.sha256")
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          archive="PaneSpace-$VERSION-macos-arm64.zip"
+          assets=("dist/$archive" "dist/$archive.sha256" "dist/$archive.sig")
+          # `gh release view` finds drafts as well as published releases, while
+          # GET /releases/tags/{tag} returns published ones only. Without this,
+          # re-running the workflow for the same tag would create a second,
+          # duplicate draft. It exits 0 when the release exists and 1 when it does
+          # not, so probe it and branch on that.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft >/dev/null 2>&1; then
+            echo "Release for $TAG already exists (draft or published); appending assets"
+            for asset in "${assets[@]}"; do
+              gh release upload "$TAG" "$asset" --clobber
+            done
+          else
+            prerelease_flag=()
+            if [[ "$PRERELEASE" == "true" ]]; then
+              prerelease_flag=(--prerelease)
+            fi
+            # Always created as a draft: Rowan publishes manually after checking
+            # the notes, so a bad tag can never ship itself.
+            gh release create "$TAG" "${assets[@]}" \
+              --draft \
+              --title "PaneSpace $VERSION" \
+              --notes "PaneSpace $VERSION — macOS 26+, Apple silicon.
+
+          Self-signed code signing; not notarised by Apple, so Gatekeeper asks
+          once on first install. See docs/RELEASING.md." \
+              "${prerelease_flag[@]}"
+          fi
+          echo "Release assets uploaded"
