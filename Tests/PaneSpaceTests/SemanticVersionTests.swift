@@ -92,6 +92,52 @@ final class SemanticVersionTests: XCTestCase {
         XCTAssertLessThan(shorter, longer)
     }
 
+    /// `==` deliberately ignores build metadata, so the hash has to ignore it too. A synthesized
+    /// `hash(into:)` would fold in `buildMetadataIdentifiers` and split two equal versions into
+    /// separate `Set` elements — the exact contract break that makes `Hashable` unreliable.
+    func testEqualVersionsHashEquallyDespiteBuildMetadata() throws {
+        let withBuild = try XCTUnwrap(SemanticVersion(string: "1.2.3+build.1"))
+        let withoutBuild = try XCTUnwrap(SemanticVersion(string: "1.2.3"))
+        let otherBuild = try XCTUnwrap(SemanticVersion(string: "1.2.3+build.999"))
+
+        var hasher = Hasher()
+        withBuild.hash(into: &hasher)
+        let first = hasher.finalize()
+        var other = Hasher()
+        withoutBuild.hash(into: &other)
+        let second = other.finalize()
+        var third = Hasher()
+        otherBuild.hash(into: &third)
+
+        XCTAssertEqual(first, second, "Equal versions must hash equally.")
+        XCTAssertEqual(first, third.finalize(), "Build metadata is not part of a version's identity.")
+    }
+
+    func testVersionsWithADifferentPreReleaseDoNotCollapseInASet() throws {
+        let stable = try XCTUnwrap(SemanticVersion(string: "1.2.3"))
+        let prerelease = try XCTUnwrap(SemanticVersion(string: "1.2.3-rc.1"))
+        let otherBuild = try XCTUnwrap(SemanticVersion(string: "1.2.3+build.1"))
+
+        let versions: Set<SemanticVersion> = [stable, prerelease, otherBuild]
+
+        XCTAssertEqual(versions.count, 2, "Build metadata collapses, a pre-release does not.")
+        XCTAssertTrue(versions.contains(stable))
+        XCTAssertTrue(versions.contains(prerelease))
+    }
+
+    func testVersionDictionariesKeyOnPrecedenceNotBuildMetadata() throws {
+        let withBuild = try XCTUnwrap(SemanticVersion(string: "2.0.0+ci.42"))
+        let withoutBuild = try XCTUnwrap(SemanticVersion(string: "2.0.0"))
+
+        let releases: [SemanticVersion: String] = [withBuild: "first"]
+
+        XCTAssertEqual(
+            releases[withoutBuild],
+            "first",
+            "Lookup by an equal version must find the entry stored under its build-metadata twin."
+        )
+    }
+
     func testDescriptionRoundTrips() throws {
         for input in ["1.0.0", "v1.0.0", "1.0.0-beta.1", "1.0.0+build.5", "1.0.0-beta.1+build.5"] {
             let version = try XCTUnwrap(SemanticVersion(string: input), input)

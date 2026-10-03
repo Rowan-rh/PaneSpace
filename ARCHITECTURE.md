@@ -77,7 +77,11 @@ Visible local panes observe their current directory and coalesce file-system eve
 
 The current version comes from `CFBundleShortVersionString`. A build without one — `swift run`, a test runner — is not checked at all, because there is no honest way to compare it against a release. The environment variable `PANESPACE_UPDATE_FAKE_VERSION` overrides the current version for on-device banner verification.
 
-A scheduled check runs at launch and then every 24 hours; its failures are silent apart from one log line that names a reason and no host, path, or query. A manual check reports `upToDate`, `available`, or `failed` so the UI can answer the user who asked. Skipping hides one version, not the channel: a higher release is still offered. Preferences are `automaticallyCheckForUpdates`, the existing `betaUpdates` key, and `skippedUpdateVersion`; turning either switch changes cancels the check in flight rather than leaving it to finish against stale settings.
+A scheduled check runs at launch and then every 24 hours; its failures are silent apart from one log line that names a reason and no host, path, or query. A manual check reports `upToDate`, `available`, or `failed` so the UI can answer the user who asked; a manual check that is cancelled reports `failed(.cancelled)` rather than the previous result, because a cancellation is not an answer. Skipping hides one version, not the channel: a higher release is still offered. Preferences are `automaticallyCheckForUpdates`, the existing `betaUpdates` key, and `skippedUpdateVersion`; turning either switch changes cancels the check in flight rather than leaving it to finish against stale settings.
+
+`UpdateModel` observes the `UserDefaults` it was given rather than relying on its own setters, because a view may write those keys directly — `SettingsView` binds `betaUpdates` with `@AppStorage`, which never reaches a computed setter. The response is identical however the value changed, and `automaticallyChecks` and `includesPrereleases` are `@Published` so a view binding them is notified.
+
+Each check carries a generation. A check that has been superseded by a newer one — a second "Check Now", a channel switch, automatic checks being turned off — still runs to completion before its caller resumes, and may not clear `isChecking` or publish a result on the way out; only the check that still owns the model may. That is what keeps a replaced check from overwriting the answer that replaced it, and what keeps a stop from failing to cancel a check it never held a handle to.
 
 ## Security model
 

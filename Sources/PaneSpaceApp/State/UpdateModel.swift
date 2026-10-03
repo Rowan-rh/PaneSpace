@@ -48,11 +48,37 @@ final class UpdateModel: ObservableObject {
     private let defaults: UserDefaults
     private let currentVersion: SemanticVersion?
     private let logger = Logger(subsystem: "org.panespace.app", category: "update")
+    /// Kept alive for as long as this model observes preferences.
+    private var defaultsObservation: NSObjectProtocol?
+    /// The skipped version this model last reacted to.
+    ///
+    /// `UserDefaults` posts one notification for any change, so the cached value is what tells a
+    /// write to `skippedUpdateVersion` apart from an unrelated write in the same process. The two
+    /// booleans need no cache of their own: comparing against the published properties is the same
+    /// test, and a `didSet` is what keeps that comparison honest.
+    private var observedSkippedVersion: String?
 
     private var checkTask: Task<CheckOutcome, Never>?
     private var scheduleTask: Task<Void, Never>?
     /// Keeps a second `start()` from running a second schedule.
     private var hasStarted = false
+    /// Counts the checks this model has started.
+    ///
+    /// A check that has been superseded still runs to completion before its caller resumes, and it
+    /// must not touch shared state on the way out. The generation identifies which check owns the
+    /// model, so a returning check only clears `checkTask` and `isChecking` when it is still the
+    /// current one, and never publishes a result at all once superseded.
+    private var checkGeneration = 0
+    /// Cancels the running check and marks everything in flight as superseded.
+    private func supersedeRunningCheck() {
+        checkGeneration += 1
+        checkTask?.cancel()
+        checkTask = nil
+        // Nothing is running under the new generation yet, and the check that was running is on its
+        // way out. Clearing this here is what stops a superseded check from leaving `isChecking` true
+        // forever: the replacement sets it again on its way in.
+        isChecking = false
+    }
 
     private enum CheckOutcome {
         /// A finished check. The release is nil when the feed has nothing published.
@@ -71,7 +97,75 @@ final class UpdateModel: ObservableObject {
         self.clock = clock
         self.defaults = defaults
         self.currentVersion = currentVersion
-        skippedVersion = defaults.string(forKey: Self.skippedVersionKey)
+        let storedSkipped = defaults.string(forKey: Self.skippedVersionKey)
+        // Read into locals first: a stored property cannot be read through `self` before every other
+        // stored property is initialized.
+        let storedAutomaticChecks = Self.readAutomaticChecks(from: defaults)
+        let storedPrereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
+        skippedVersion = storedSkipped
+        automaticallyChecks = storedAutomaticChecks
+        includesPrereleases = storedPrereleases
+        observedSkippedVersion = storedSkipped
+        observePreferences()
+    }
+
+    /// Removes the preference observer. The token is cleared here because a `deinit` may not touch
+    /// main-actor state, and the observer holds only a weak reference, so nothing outlives the model.
+    nonisolated deinit {
+        MainActor.assumeIsolated {
+            if let defaultsObservation {
+                NotificationCenter.default.removeObserver(defaultsObservation)
+            }
+        }
+    }
+
+    /// Watches the injected defaults so the model reacts however the preference was written.
+    ///
+    /// A view may bind these keys with `@AppStorage`, a `Binding`, or plain `UserDefaults` code, and
+    /// only the first of those would ever reach a computed setter. Observing the store means the
+    /// response is the same in every case, which is what keeps the model and the Settings window
+    /// from disagreeing about which channel is active.
+    private func observePreferences() {
+        let defaults = self.defaults
+        defaultsObservation = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: defaults,
+            queue: nil
+        ) { [weak self] _ in
+            // The notification arrives on whatever thread wrote the value; the response touches
+            // main-actor state, so the hop is explicit.
+            Task { @MainActor [weak self] in
+                self?.preferencesDidChange()
+            }
+        }
+    }
+
+    private func preferencesDidChange() {
+        let automaticChecks = Self.readAutomaticChecks(from: defaults)
+        let prereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
+        let skipped = defaults.string(forKey: Self.skippedVersionKey)
+
+        // Assigning the published properties is what routes the response. Each `didSet` writes the
+        // value back and then performs exactly the cancellation or rescheduling a write through the
+        // model would have performed, so there is one response path rather than two that can drift
+        // apart. The comparison is against the published value rather than a separate cache, so the
+        // value and the response to it cannot disagree.
+        if prereleases != includesPrereleases {
+            includesPrereleases = prereleases
+        }
+        if skipped != skippedVersion {
+            observedSkippedVersion = skipped
+            skippedVersion = skipped
+        }
+        if automaticChecks != automaticallyChecks {
+            automaticallyChecks = automaticChecks
+        }
+    }
+
+    private static func readAutomaticChecks(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: automaticallyChecksKey) == nil
+            ? true
+            : defaults.bool(forKey: automaticallyChecksKey)
     }
 
     /// Whether this build can be compared with releases at all.
@@ -85,16 +179,14 @@ final class UpdateModel: ObservableObject {
     var currentVersionDescription: String { currentVersion?.description ?? L10n.text("Unknown") }
 
     /// Whether checks happen on their own. Defaults to true for a new install.
-    var automaticallyChecks: Bool {
-        get {
-            defaults.object(forKey: Self.automaticallyChecksKey) == nil
-                ? true
-                : defaults.bool(forKey: Self.automaticallyChecksKey)
-        }
-        set {
-            guard newValue != automaticallyChecks else { return }
-            defaults.set(newValue, forKey: Self.automaticallyChecksKey)
-            if newValue {
+    ///
+    /// Published so a view can bind it directly and still refresh: this is the model behind the
+    /// Settings toggle, not a value the toggle writes and the model merely reads back.
+    @Published var automaticallyChecks: Bool {
+        didSet {
+            guard automaticallyChecks != oldValue else { return }
+            defaults.set(automaticallyChecks, forKey: Self.automaticallyChecksKey)
+            if automaticallyChecks {
                 restateSchedule()
             } else {
                 // Switching off has to stop work already in flight, not only future runs.
@@ -105,16 +197,11 @@ final class UpdateModel: ObservableObject {
 
     /// Whether pre-releases are offered. Shares the `betaUpdates` key the Settings window already
     /// binds, so the toggle and the model cannot disagree.
-    var includesPrereleases: Bool {
-        get { defaults.bool(forKey: Self.includesPrereleasesKey) }
-        set {
-            guard newValue != includesPrereleases else { return }
-            defaults.set(newValue, forKey: Self.includesPrereleasesKey)
-            // The answer depends on the channel, so the previous one no longer applies.
-            availableUpdate = nil
-            lastManualResult = nil
-            lastAutomaticFailure = nil
-            restateSchedule()
+    @Published var includesPrereleases: Bool {
+        didSet {
+            guard includesPrereleases != oldValue else { return }
+            defaults.set(includesPrereleases, forKey: Self.includesPrereleasesKey)
+            handlePrereleasesChanged()
         }
     }
 
@@ -145,6 +232,8 @@ final class UpdateModel: ObservableObject {
     func skip(version: String) {
         skippedVersion = version
         defaults.set(version, forKey: Self.skippedVersionKey)
+        // Kept in step with the store so the write above is not re-applied as an external change.
+        observedSkippedVersion = version
         clearIfShowing(version)
     }
 
@@ -155,7 +244,8 @@ final class UpdateModel: ObservableObject {
 
     private func runCheck(origin: Origin) async -> UpdateCheckResult {
         // A check already in flight is superseded: its answer would describe a different feed state.
-        checkTask?.cancel()
+        supersedeRunningCheck()
+        let generation = checkGeneration
         guard let currentVersion else {
             // Nothing to compare against. A manual check reports the reason; a scheduled one is
             // never started in the first place.
@@ -164,14 +254,21 @@ final class UpdateModel: ObservableObject {
 
         isChecking = true
         let outcome = await performRequest(includingPrereleases: includesPrereleases)
+        // The state below belongs to whichever check is current. A check that lost the model while
+        // it was waiting must not clear the running check's task, must not report it as no longer
+        // in progress, and must not publish its own result.
+        guard generation == checkGeneration else {
+            return .failed(.cancelled)
+        }
         checkTask = nil
         isChecking = false
 
         switch outcome {
         case .cancelled:
-            // Leave the existing state alone: a cancelled check must not look like a fresh answer.
-            guard origin == .manual else { return .failed(.cancelled) }
-            return lastManualResult ?? .failed(.cancelled)
+            // A cancellation is not an answer. Reporting the previous result would hand the caller
+            // something stale, so the caller is told the check was cancelled and no state is
+            // written, leaving whatever the replacement check publishes intact.
+            return .failed(.cancelled)
         case .failed(let error):
             return finish(.failed(error), origin: origin)
         case .completed(let release):
@@ -255,15 +352,17 @@ final class UpdateModel: ObservableObject {
     private func restateSchedule() {
         scheduleTask?.cancel()
         scheduleTask = nil
-        checkTask?.cancel()
-        checkTask = nil
+        supersedeRunningCheck()
         guard hasStarted, automaticallyChecks, isSupported else { return }
 
         let interval = Self.checkInterval
         let clock = self.clock
         scheduleTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.performScheduledCheck()
+                // Held strongly for the length of one iteration: without it a released model would
+                // keep waking every 24 hours to do nothing.
+                guard let self else { return }
+                await self.performScheduledCheck()
                 do {
                     try await clock.sleep(for: interval)
                 } catch {
@@ -283,9 +382,16 @@ final class UpdateModel: ObservableObject {
     private func stopWork() {
         scheduleTask?.cancel()
         scheduleTask = nil
-        checkTask?.cancel()
-        checkTask = nil
+        supersedeRunningCheck()
         isChecking = false
+    }
+
+    /// The channel changed, so every answer computed for the previous one is no longer an answer.
+    private func handlePrereleasesChanged() {
+        availableUpdate = nil
+        lastManualResult = nil
+        lastAutomaticFailure = nil
+        restateSchedule()
     }
 
     private enum Origin {

@@ -125,9 +125,15 @@ struct GitHubReleaseFeed: UpdateFeed {
             }
         }
 
-        let data = try await send(URLRequest(url: Self.apiBase.appendingPathComponent("releases/latest")))
         do {
+            let data = try await send(URLRequest(url: Self.apiBase.appendingPathComponent("releases/latest")))
             return [try JSONDecoder().decode(GitHubRelease.self, from: data)]
+        } catch UpdateFeedError.httpStatus(404) {
+            // This endpoint answers 404 when the repository has published no stable release, which
+            // is an empty feed rather than a failure. The list endpoint agrees, answering `[]`.
+            return []
+        } catch let error as UpdateFeedError {
+            throw error
         } catch {
             throw UpdateFeedError.invalidResponse
         }

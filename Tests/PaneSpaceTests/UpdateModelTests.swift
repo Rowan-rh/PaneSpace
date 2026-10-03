@@ -1,7 +1,19 @@
+import Combine
 import Foundation
 import Synchronization
 import XCTest
 @testable import PaneSpaceApp
+
+/// Counts `objectWillChange` publications, so a test can assert that a bound property announces its
+/// change instead of only storing it.
+@MainActor
+private final class ObjectWillChangeRecorder {
+    private(set) var count = 0
+
+    func record() {
+        count += 1
+    }
+}
 
 /// A feed that answers with whatever a test puts in it, and can be held mid-request so a test can
 /// observe or cancel a check that is genuinely in flight.
@@ -45,6 +57,23 @@ private actor StubUpdateFeed: UpdateFeed {
         for continuation in continuations {
             continuation.resume()
         }
+    }
+
+    /// Resumes a single held request — the oldest — and leaves the rest waiting.
+    ///
+    /// `release()` answers everything at once, which cannot express the interleaving that matters
+    /// here: a superseded check returning while the check that replaced it is still genuinely in
+    /// flight. That window is where the state the two checks share gets corrupted.
+    func releaseOne() {
+        guard !pendingContinuations.isEmpty else { return }
+        pendingContinuations.removeFirst().resume()
+    }
+
+    /// Stops holding without answering anything already waiting, so a later request can complete on
+    /// its own. Used to show that a model still works after its checks have been cancelled.
+    func stopHolding() {
+        holds = false
+        holdAfterRequest = Int.max
     }
 
     func latestRelease(includingPrereleases: Bool) async throws -> ReleaseInfo? {
@@ -568,6 +597,319 @@ final class UpdateModelTests: XCTestCase {
         let result = await model.checkNow()
 
         XCTAssertEqual(result, .available(release))
+    }
+
+    // MARK: Superseded checks
+
+    /// A check that is replaced by a newer one must not clear the newer check's `isChecking` when it
+    /// returns. The scenario is ordinary: the launch-time automatic check is still running when the
+    /// user clicks "Check Now".
+    @MainActor
+    func testASupersededCheckDoesNotClearTheNewerChecksCheckingState() async {
+        let feed = StubUpdateFeed()
+        await feed.enqueue(.success(makeRelease("0.2.0")))
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        // Both requests are held, so each check is still in flight when the next one replaces it.
+        await feed.holdRequests()
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let model = makeModel(feed: feed, clock: clock, defaults: makeDefaults())
+
+        model.start()
+        await waitUntil { await feed.requestCount == 1 }
+        let manual = Task { await model.checkNow() }
+        await waitUntil { await feed.requestCount == 2 }
+
+        // Answer only the superseded request. The manual check that replaced it is still waiting, so
+        // the model is genuinely still checking when the superseded one returns.
+        await feed.releaseOne()
+        await settle()
+
+        XCTAssertTrue(
+            model.isChecking,
+            "A superseded check must not report the model as no longer checking while a newer one runs."
+        )
+
+        await feed.release()
+        let result = await manual.value
+        model.stop()
+
+        XCTAssertEqual(result, .available(makeRelease("0.3.0")))
+        XCTAssertFalse(model.isChecking, "Once nothing is running, the model says so.")
+    }
+
+    /// A channel switch while a manual check is in flight. The manual check describes the old
+    /// channel, so it is replaced by the recheck for the new one — and its caller is told so rather
+    /// than being handed an answer computed against preferences that no longer hold.
+    @MainActor
+    func testAManualCheckSupersededByAChannelSwitchIsToldItWasCancelled() async {
+        let feed = StubUpdateFeed()
+        await feed.enqueue(.success(makeRelease("0.2.0")))
+        await feed.enqueue(.success(nil))
+        await feed.holdRequests()
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let model = makeModel(feed: feed, clock: clock, defaults: makeDefaults())
+
+        model.start()
+        await waitUntil { await feed.requestCount == 1 }
+        let manual = Task { await model.checkNow() }
+        await waitUntil { await feed.requestCount == 2 }
+
+        // Switching the channel replaces both running checks with one recheck for the new channel.
+        model.includesPrereleases = true
+        // Cancelling does not unblock a request the feed is still holding, so the replaced checks
+        // are answered before their callers can resume.
+        await feed.release()
+        let manualResult = await manual.value
+
+        XCTAssertEqual(manualResult, .failed(.cancelled), "The caller is told its check was replaced.")
+        XCTAssertNil(model.lastManualResult, "A cancelled manual check publishes nothing.")
+
+        let requests = await feed.requestCount
+        XCTAssertEqual(requests, 3, "The new channel is asked once, for everyone.")
+
+        await feed.stopHolding()
+        model.stop()
+    }
+
+    /// A cancelled manual check must report the cancellation, not hand the caller the previous
+    /// result. Returning a stale answer is how a UI ends up telling the user "you are up to date"
+    /// about a check that never ran.
+    @MainActor
+    func testACancelledManualCheckReportsCancelledRatherThanTheLastResult() async {
+        let feed = StubUpdateFeed()
+        await feed.enqueue(.success(makeRelease("0.2.0")))
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        await feed.enqueue(.success(makeRelease("0.4.0")))
+        // The first check answers immediately; the ones after it wait, so each is genuinely in
+        // flight when the next replaces it.
+        await feed.holdRequests(after: 1)
+        let model = makeModel(feed: feed, defaults: makeDefaults())
+
+        let first = await model.checkNow()
+        XCTAssertEqual(first, .available(makeRelease("0.2.0")))
+
+        let second = Task { await model.checkNow() }
+        await waitUntil { await feed.requestCount == 2 }
+        // A third check replaces the second, which is the ordinary "user clicks Check Now twice"
+        // path. The second check is still waiting on the feed, so it is genuinely in flight.
+        let third = Task { await model.checkNow() }
+        await waitUntil { await feed.requestCount == 3 }
+
+        // Answer only the superseded request. It resumes as cancelled, and the check that replaced
+        // it is still running, so `isChecking` must still be true.
+        await feed.releaseOne()
+        let result = await second.value
+
+        XCTAssertEqual(
+            result,
+            .failed(.cancelled),
+            "A cancelled check has no answer, and the previous one is not it."
+        )
+        XCTAssertTrue(model.isChecking, "The check that replaced it is still running.")
+        XCTAssertEqual(
+            model.lastManualResult,
+            .available(makeRelease("0.2.0")),
+            "Cancelling must not rewrite the state the completed check already published."
+        )
+
+        await feed.release()
+        let final = await third.value
+        XCTAssertEqual(final, .available(makeRelease("0.4.0")))
+        XCTAssertEqual(model.lastManualResult, .available(makeRelease("0.4.0")))
+    }
+
+    /// After a cancellation, the model is usable again: a later check still runs and publishes.
+    @MainActor
+    func testACheckAfterACancellationStillRuns() async {
+        let feed = StubUpdateFeed()
+        await feed.enqueue(.success(makeRelease("0.2.0")))
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        // The cancelled check waits so it is really in flight; the next one answers at once.
+        await feed.holdRequests(after: 0)
+        let model = makeModel(feed: feed, defaults: makeDefaults())
+
+        let cancelled = Task { await model.checkNow() }
+        await waitUntil { await feed.requestCount == 1 }
+        model.stop()
+        await feed.release()
+        let cancelledResult = await cancelled.value
+        XCTAssertEqual(cancelledResult, .failed(.cancelled))
+        XCTAssertFalse(model.isChecking, "A stopped model is not checking.")
+
+        await feed.stopHolding()
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        let result = await model.checkNow()
+
+        XCTAssertEqual(result, .available(makeRelease("0.3.0")), "The model is still usable.")
+    }
+
+    // MARK: Preferences written outside the model
+
+    /// The Settings window binds `betaUpdates` with `@AppStorage`, which writes `UserDefaults`
+    /// directly and never reaches a computed setter. The model observes the store, so the response
+    /// is the same however the preference was written.
+    @MainActor
+    func testWritingTheBetaPreferenceDirectlyRechecksAndDropsTheOldChannelsAnswer() async {
+        let feed = StubUpdateFeed()
+        // The first answer is for the old channel; the recheck after the switch finds nothing.
+        await feed.enqueue(.success(makeRelease("0.2.0")))
+        await feed.enqueue(.success(nil))
+        await feed.holdRequests()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+
+        model.start()
+        await waitUntil { await feed.requestCount == 1 }
+
+        // Written the way `@AppStorage` writes it: no setter, no model involvement.
+        defaults.set(true, forKey: UpdateModel.includesPrereleasesKey)
+        // The new channel has a different answer, so it is re-asked rather than left to the day.
+        await waitUntil { await feed.requestCount == 2 }
+
+        let flags = await feed.prereleaseFlags
+        XCTAssertEqual(flags, [false, true], "The recheck asks the channel that is now selected.")
+
+        // Both requests now answer. The superseded one carries a release, but it belongs to the old
+        // channel and must not become a banner.
+        await feed.release()
+        await waitUntil { !model.isChecking }
+
+        XCTAssertTrue(model.includesPrereleases, "The model follows the store, not just its own setter.")
+        XCTAssertNil(
+            model.availableUpdate,
+            "An answer for the previous channel must not become a banner on the new one."
+        )
+        XCTAssertEqual(model.lastAutomaticFailure, nil)
+        model.stop()
+    }
+
+    @MainActor
+    func testWritingTheAutomaticChecksPreferenceDirectlyRestopsTheSchedule() async {
+        let feed = StubUpdateFeed(fallback: .success(nil))
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, clock: clock, defaults: defaults)
+
+        defaults.set(false, forKey: UpdateModel.automaticallyChecksKey)
+        model.start()
+        await settle()
+        var requests = await feed.requestCount
+        XCTAssertEqual(requests, 0, "The schedule reads the switch before its first check.")
+
+        defaults.set(true, forKey: UpdateModel.automaticallyChecksKey)
+        await waitUntil { await feed.requestCount == 1 }
+        model.stop()
+
+        requests = await feed.requestCount
+        XCTAssertEqual(requests, 1, "Turning the switch back on restarts the schedule.")
+        XCTAssertTrue(model.automaticallyChecks, "The published value tracks the store.")
+    }
+
+    @MainActor
+    func testWritingTheAutomaticChecksPreferenceDirectlyCancelsACheckInFlight() async {
+        let feed = StubUpdateFeed(fallback: .success(makeRelease("0.2.0")))
+        await feed.holdRequests()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+
+        model.start()
+        await waitUntil { await feed.requestCount == 1 }
+
+        defaults.set(false, forKey: UpdateModel.automaticallyChecksKey)
+        await waitUntil { !model.automaticallyChecks }
+
+        XCTAssertFalse(model.isChecking, "Switching off must stop work already in flight.")
+        await feed.release()
+        await settle()
+        XCTAssertNil(model.availableUpdate)
+    }
+
+    @MainActor
+    func testWritingTheSkippedVersionPreferenceDirectlyIsObserved() async {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        await waitUntil { model.skippedVersion == "0.2.0" }
+
+        XCTAssertEqual(model.skippedVersion, "0.2.0")
+    }
+
+    /// The Settings window binds `betaUpdates`; a banner offered for a release the user has already
+    /// skipped must disappear even though the skip happened outside the model.
+    @MainActor
+    func testSkippingThroughPreferencesHidesTheBannerOnTheNextCheck() async {
+        let release = makeRelease("0.2.0")
+        let feed = StubUpdateFeed(fallback: .success(release))
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+
+        _ = await model.checkNow()
+        XCTAssertEqual(model.availableUpdate?.tag, "0.2.0")
+
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        await waitUntil { model.skippedVersion == "0.2.0" }
+
+        let result = await model.checkNow()
+        XCTAssertEqual(result, .upToDate, "A version skipped in preferences is not offered again.")
+        XCTAssertNil(model.availableUpdate)
+    }
+
+    /// An unrelated write must not be mistaken for one of the model's own preferences. The store
+    /// posts a single notification for any change, so only a real difference may trigger a response.
+    @MainActor
+    func testAnUnrelatedPreferenceWriteDoesNotDisturbTheModel() async {
+        let feed = StubUpdateFeed(fallback: .success(nil))
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, clock: clock, defaults: defaults)
+
+        model.start()
+        await waitUntil { clock.sleepCount == 1 }
+        let sleepsBefore = clock.sleepCount
+        let checksBefore = model.isChecking
+
+        defaults.set("something else", forKey: "unrelatedPaneSpaceKey")
+        await settle()
+
+        XCTAssertEqual(clock.sleepCount, sleepsBefore, "An unrelated write must not reschedule.")
+        XCTAssertEqual(model.isChecking, checksBefore)
+        XCTAssertTrue(model.automaticallyChecks)
+        XCTAssertFalse(model.includesPrereleases)
+        model.stop()
+    }
+
+    /// The model is the thing a Settings toggle binds to, so a change to it has to reach observers.
+    /// `automaticallyChecks` and `includesPrereleases` were computed properties, which publish
+    /// nothing; a `Binding` over them would have shown a stale Toggle.
+    @MainActor
+    func testPreferencePropertiesPublishTheirChangesToObservers() async {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let recorder = ObjectWillChangeRecorder()
+        let subscription = model.objectWillChange.sink { _ in recorder.record() }
+        defer { subscription.cancel() }
+
+        // Counted separately per change: each one may legitimately publish more than once, because
+        // responding to a preference moves other published state too. What matters is that a bound
+        // Toggle is told at all — a computed property told it zero times.
+        let before = recorder.count
+        model.automaticallyChecks = false
+        let afterAutomatic = recorder.count
+        model.includesPrereleases = true
+        let afterPrereleases = recorder.count
+
+        XCTAssertGreaterThan(afterAutomatic, before, "A bound Toggle has to be told the value moved.")
+        XCTAssertGreaterThan(afterPrereleases, afterAutomatic)
+
+        // `@Published` announces before `didSet` can compare, so writing the same value still
+        // publishes. That is harmless — a view re-reading the value sees no change — and the
+        // important half is the one above: the change is announced at all, which a computed
+        // property never did.
     }
 
     // MARK: Skipping

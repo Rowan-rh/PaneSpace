@@ -83,6 +83,18 @@ struct SemanticVersion: Hashable, Sendable, Comparable, CustomStringConvertible 
             && lhs.prereleaseIdentifiers == rhs.prereleaseIdentifiers
     }
 
+    /// Hashes the same fields `==` compares.
+    ///
+    /// Written out rather than synthesized because a synthesized version would include the build
+    /// identifiers, breaking the `Hashable` contract: equal versions must hash equally, otherwise a
+    /// `Set` keeps `1.2.3+build.1` and `1.2.3` as two elements even though they are equal.
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(major)
+        hasher.combine(minor)
+        hasher.combine(patch)
+        hasher.combine(prereleaseIdentifiers)
+    }
+
     /// SemVer 2.0 §11: core fields numerically, then a stable version above any pre-release of the
     /// same core version, then pre-release identifiers field by field.
     static func < (lhs: Self, rhs: Self) -> Bool {

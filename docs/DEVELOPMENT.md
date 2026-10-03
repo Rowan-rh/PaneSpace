@@ -71,6 +71,12 @@ PANESPACE_UPDATE_FAKE_VERSION=0.0.1 swift run PaneSpace
 
 该值只影响“当前版本”，发布版本号仍以 `scripts/build-app.sh` 中的 `CFBundleShortVersionString` 为准。相关偏好为 `automaticallyCheckForUpdates`（默认开启）、`betaUpdates` 和 `skippedUpdateVersion`。
 
+`UpdateModel` 观察注入的 `UserDefaults`（`UserDefaults.didChangeNotification`），所以无论偏好是被 `@AppStorage`、`Binding` 还是直接 `defaults.set(...)` 写入，模型都会做出同样的响应：切换 Beta 会取消进行中的检查并清空旧频道的答案，关闭自动检查会同时停掉调度和在途检查。`automaticallyChecks` 和 `includesPrereleases` 是 `@Published` 属性，绑定时直接用它们本身即可，不需要额外的 `objectWillChange`：
+
+```swift
+SettingsToggle("Include beta updates", isOn: $model.includesPrereleases)
+```
+
 ## 界面验证清单
 
 - 启动生成的应用包。

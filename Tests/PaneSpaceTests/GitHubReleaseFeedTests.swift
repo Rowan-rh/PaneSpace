@@ -205,7 +205,10 @@ final class GitHubReleaseFeedTests: XCTestCase {
     // MARK: Failures
 
     func testMapsNonSuccessStatusCodes() async {
-        for status in [403, 404, 429, 500, 503] {
+        // 404 is excluded on purpose: the stable-release endpoint answers 404 when the repository has
+        // published none, which is an empty feed rather than a failure, and
+        // `testTreatsA404FromTheLatestEndpointAsAnEmptyFeed` covers that case.
+        for status in [403, 429, 500, 503] {
             let feed = GitHubReleaseFeed(loader: { request in
                 (Data(), Self.httpResponse(statusCode: status))
             })
@@ -217,6 +220,37 @@ final class GitHubReleaseFeedTests: XCTestCase {
             } catch {
                 XCTFail("Unexpected error for HTTP \(status): \(error)")
             }
+        }
+    }
+
+    /// GitHub answers 404 on `/releases/latest` when no stable release exists. Reporting that as
+    /// "could not be reached" would send the user to a connection error for a repository that simply
+    /// has not shipped yet, and the list endpoint already reports the same situation as `[]`.
+    func testTreatsA404FromTheLatestEndpointAsAnEmptyFeed() async throws {
+        let feed = GitHubReleaseFeed(loader: { _ in
+            (Data(), Self.httpResponse(statusCode: 404))
+        })
+
+        let release = try await feed.latestRelease(includingPrereleases: false)
+
+        XCTAssertNil(release, "No stable release yet is an empty feed, not a failure.")
+    }
+
+    /// Only the stable-release endpoint gets that reading. On the list endpoint a 404 is the request
+    /// itself failing — a moved or renamed repository looks exactly like this — so it stays an error
+    /// rather than being quietly reported as "no releases".
+    func testStillReportsA404FromTheListEndpointAsAFailure() async {
+        let feed = GitHubReleaseFeed(loader: { _ in
+            (Data(), Self.httpResponse(statusCode: 404))
+        })
+
+        do {
+            _ = try await feed.latestRelease(includingPrereleases: true)
+            XCTFail("Expected a failure.")
+        } catch let error as UpdateFeedError {
+            XCTAssertEqual(error, .httpStatus(404))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
         }
     }
 
