@@ -237,6 +237,19 @@ final class UpdateModelTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(60))
     }
 
+    /// Waits for something to be released, rather than checking once and hoping a deinit has run.
+    @MainActor
+    private func waitUntilReleased(_ reference: () -> AnyObject?, timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while reference() != nil {
+            if Date() > deadline {
+                XCTFail("The object was still alive after \(timeout) seconds.")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     // MARK: Current version
 
     @MainActor
@@ -432,6 +445,35 @@ final class UpdateModelTests: XCTestCase {
         let sleeps = clock.sleepCount
         XCTAssertEqual(requests, 1)
         XCTAssertEqual(sleeps, 1)
+    }
+
+    /// The schedule must not keep a model alive. It captures `self` weakly, so a model that nobody
+    /// else holds is released; the only strong reference is the one a single check legitimately
+    /// needs, scoped to the check rather than to the 24-hour sleep that follows it. A binding that
+    /// outlived the check would keep the model — and its observer and feed — resident until the next
+    /// tick, which is the opposite of what a released model should do.
+    @MainActor
+    func testModelIsReleasedWhileTheScheduleSleeps() async {
+        let feed = StubUpdateFeed(fallback: .success(nil))
+        let clock = StubUpdateClock()
+        // The first check answers at once and the schedule then parks in its sleep, which is the
+        // state the model has to survive.
+        clock.holdSleeps()
+        await feed.holdRequests(after: 0)
+        let defaults = makeDefaults()
+
+        weak var weakModel: UpdateModel?
+        do {
+            let model = makeModel(feed: feed, clock: clock, defaults: defaults)
+            weakModel = model
+            model.start()
+            await waitUntil { await feed.requestCount == 1 }
+            await feed.release()
+            await waitUntil { clock.sleepCount == 1 }
+        }
+
+        await waitUntilReleased { weakModel }
+        XCTAssertNil(weakModel, "A released model must not be kept alive by its own schedule.")
     }
 
     // MARK: Cancellation and preference changes

@@ -359,10 +359,13 @@ final class UpdateModel: ObservableObject {
         let clock = self.clock
         scheduleTask = Task { [weak self] in
             while !Task.isCancelled {
-                // Held strongly for the length of one iteration: without it a released model would
-                // keep waking every 24 hours to do nothing.
-                guard let self else { return }
-                await self.performScheduledCheck()
+                do {
+                    // Held strongly for the check only. A binding scoped to the whole loop would
+                    // also cover the sleep below, keeping a released model alive for the next 24
+                    // hours — the opposite of what a released model should do.
+                    guard let self else { return }
+                    await self.performScheduledCheck()
+                }
                 do {
                     try await clock.sleep(for: interval)
                 } catch {
