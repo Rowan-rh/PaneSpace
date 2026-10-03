@@ -23,6 +23,7 @@ FileProviding protocol
 AppModel ─── FileTransferQueueModel ─── LocalTransferService
 AppModel ─── OperationHistoryModel ─── OperationHistoryStore / OperationUndoService
 AppModel ─── WorkspaceShortcutsModel ─── UserDefaults / LocalPathResolver
+AppModel ─── UpdateModel ─── UpdateFeed / GitHubReleaseFeed
 BrowserPaneModel ─── LocalDirectoryObserver / LocalPathResolver
 ```
 
@@ -69,6 +70,14 @@ Visible local panes observe their current directory and coalesce file-system eve
 ## Sidebar
 
 `SidebarModel` loads favorites and mounted volumes from `SidebarLocationProviding`. User-defined workspaces live in `WorkspaceShortcutsModel`, which `AppModel` shares between the sidebar and Settings. It stores name, SF Symbol, and folder path as JSON in preferences, validates paths through `LocalPathResolver`, and checks folder availability off the main actor. Selecting a sidebar row opens it in the active pane, and the sidebar highlight follows the active pane's location. Workspaces whose folder is missing stay listed but cannot be selected.
+
+## Update checks
+
+`UpdateModel` owns update state and the daily schedule; it is the only type that talks to an `UpdateFeed`. `GitHubReleaseFeed` reads this repository's unauthenticated GitHub Releases API: with beta updates off it asks `/releases/latest`, and with them on it asks `/releases?per_page=20` and takes the highest version, because that list is ordered by publication date rather than version. Drafts and tags that are not versions are never offered. The request layer is behind an injectable loader and normalizes every non-2xx, decoding, transport, and cancellation failure into `UpdateFeedError`, so rate limiting is distinguishable from an outage.
+
+The current version comes from `CFBundleShortVersionString`. A build without one — `swift run`, a test runner — is not checked at all, because there is no honest way to compare it against a release. The environment variable `PANESPACE_UPDATE_FAKE_VERSION` overrides the current version for on-device banner verification.
+
+A scheduled check runs at launch and then every 24 hours; its failures are silent apart from one log line that names a reason and no host, path, or query. A manual check reports `upToDate`, `available`, or `failed` so the UI can answer the user who asked. Skipping hides one version, not the channel: a higher release is still offered. Preferences are `automaticallyCheckForUpdates`, the existing `betaUpdates` key, and `skippedUpdateVersion`; turning either switch changes cancels the check in flight rather than leaving it to finish against stale settings.
 
 ## Security model
 
