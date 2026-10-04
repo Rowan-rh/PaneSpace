@@ -205,6 +205,15 @@ fi
 # them, and keeping it preserves the entitlements and flags Sparkle ships with.
 # ADR 0011 records that this must be re-evaluated if PaneSpace ever moves to a
 # real Developer ID.
+
+# Set before the signing functions run: they read `keychain_args` at call time, and under
+# `set -u` an unset array is an error rather than an empty list. Declaring it next to the
+# functions would be too late -- the nested helpers are signed first.
+keychain_args=()
+if [[ -n "$sign_keychain" ]]; then
+    keychain_args=(--keychain "$sign_keychain")
+fi
+
 sign_host() {
     local target="$1"
     if [[ "$sign_identity" == "-" ]]; then
@@ -252,11 +261,6 @@ for nested in $nested_targets; do
 done
 print "Signing Sparkle.framework"
 sign_one "$frameworks_dir/Sparkle.framework"
-
-keychain_args=()
-if [[ -n "$sign_keychain" ]]; then
-    keychain_args=(--keychain "$sign_keychain")
-fi
 
 if [[ "$sign_identity" == "-" ]]; then
     print "Signing ad-hoc (-)"
