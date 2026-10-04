@@ -175,6 +175,16 @@ struct PaneSpaceApp: App {
                     appModel.isShowingSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
+
+                // Placed after "About PaneSpace", which the app-information group owns. A build with
+                // no version to compare against has no honest answer to a check, so the command is
+                // disabled rather than failing silently.
+                Divider()
+
+                Button(L10n.text("Check for Updates…")) {
+                    Task { await UpdateCheckAction.runAndAlert(appModel.updates) }
+                }
+                .disabled(!appModel.updates.isSupported || appModel.updates.isChecking)
             }
         }
     }
