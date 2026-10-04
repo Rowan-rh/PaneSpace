@@ -51,14 +51,34 @@ jobs:
           CERT: ${{ secrets.PANESPACE_CERT_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.PANESPACE_CERT_P12_PASSWORD }}
           ED_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
+          APPCAST_URL: ${{ secrets.PANESPACE_APPCAST_URL }}
         run: |
           set -euo pipefail
           missing=()
           [[ -n "$CERT" ]] || missing+=(PANESPACE_CERT_P12_BASE64)
           [[ -n "$CERT_PASSWORD" ]] || missing+=(PANESPACE_CERT_P12_PASSWORD)
           [[ -n "$ED_KEY" ]] || missing+=(PANESPACE_ED25519_PRIVATE_KEY)
+          # The feed URL is required, not optional: a build that ships SUPublicEDKey
+          # but no reachable feed checks for updates forever and never finds one.
+          # It is a secret rather than a constant because the carrier (a dedicated
+          # branch, GitHub Pages, or an asset on a fixed tag) is a repository
+          # decision -- see docs/adr/0011 decision 3.
+          [[ -n "$APPCAST_URL" ]] || missing+=(PANESPACE_APPCAST_URL)
           if (( ${#missing[@]} > 0 )); then
             echo "::error::Missing repository secret(s): ${missing[*]}"
+            exit 1
+          fi
+          # Checked here as well as in build-app.sh: failing before the build
+          # saves a signed artifact nobody can update.
+          if [[ "$APPCAST_URL" != https://* ]]; then
+            echo "::error::PANESPACE_APPCAST_URL must be an https URL; a release must not ship a plaintext feed"
+            exit 1
+          fi
+          # A release that trusted a local feed would defeat the EdDSA
+          # verification the rest of the build sets up, so the test-only switch is
+          # refused outright here rather than left to a reviewer's eye.
+          if [[ -n "${PANESPACE_APPCAST_ALLOW_LOCALHOST:-}" ]]; then
+            echo "::error::PANESPACE_APPCAST_ALLOW_LOCALHOST must not be set in a release build"
             exit 1
           fi
           echo "All signing secrets are present"
@@ -154,6 +174,7 @@ jobs:
           PANESPACE_SIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}
           PANESPACE_SIGN_KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
           PANESPACE_ED_PUBLIC_KEY: ${{ steps.publickey.outputs.key }}
+          PANESPACE_APPCAST_URL: ${{ secrets.PANESPACE_APPCAST_URL }}
         run: make app
 
       - name: Verify signature and print designated requirement
@@ -209,6 +230,77 @@ jobs:
           rm -f "$archive.probe"
           echo "Signature rejects a tampered archive as expected"
 
+      - name: Generate the signed appcast
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          REPO: ${{ github.repository }}
+          APPCAST_URL: ${{ secrets.PANESPACE_APPCAST_URL }}
+          PANESPACE_ED25519_PRIVATE_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          sparkle_src="$PWD/.build/checkouts/Sparkle"
+          if [[ ! -d "$sparkle_src" ]]; then
+            echo "::error::Sparkle checkout is missing; the app build above must resolve it first"
+            exit 1
+          fi
+          # Built from the pinned checkout, so the generator is the same version as
+          # the framework the app was linked against. An x86_64 slice is asked for
+          # explicitly: the runner is arm64, but the appcast this produces is
+          # platform-independent and the archive already names arm64.
+          xcodebuild -project "$sparkle_src/Sparkle.xcodeproj" \
+            -scheme generate_appcast -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/appcast-dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO build
+
+          generator="$RUNNER_TEMP/appcast-dd/Build/Products/Release/generate_appcast"
+          [[ -x "$generator" ]] || { echo "::error::generate_appcast was not produced"; exit 1; }
+
+          mkdir -p dist/appcast-input
+          mv dist/PaneSpace-"$VERSION"-macos-arm64.zip dist/appcast-input/
+          [[ -f "dist/PaneSpace-$VERSION-macos-arm64.zip.sig" ]] \
+            && cp "dist/PaneSpace-$VERSION-macos-arm64.zip.sig" dist/appcast-input/
+
+          # The previous appcast is an input, not a convenience: without it
+          # generate_appcast rebuilds the feed from these archives alone, every
+          # historical entry disappears and no delta can be computed, so a user
+          # on an older version gets a full download or nothing. It is fetched
+          # from the same fixed URL the app is pointed at, which is what makes
+          # that URL the one source of truth. A 404 is the normal first release.
+          if curl -fsSL --max-time 60 "$APPCAST_URL" -o dist/appcast-input/appcast.xml; then
+            echo "Previous appcast fetched from $APPCAST_URL; history and deltas preserved"
+          else
+            echo "No previous appcast at $APPCAST_URL (first release); generating from scratch"
+            rm -f dist/appcast-input/appcast.xml
+          fi
+
+          # The private key goes in on stdin and never in argv, matching the
+          # convention the release signing step already uses.
+          channel_args=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            # Both channels live in this one feed: a beta tag tags the new item,
+            # a release tag leaves it untagged so it lands in the default channel
+            # that Sparkle always allows. Nothing here creates a second feed.
+            channel_args=(--channel beta)
+          fi
+          printf '%s' "$PANESPACE_ED25519_PRIVATE_KEY" \
+            | "$generator" --ed-key-file - \
+                --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
+                "${channel_args[@]}" \
+                dist/appcast-input
+
+          # generate_appcast writes into its input directory.
+          cp dist/appcast-input/appcast.xml dist/appcast.xml
+          echo "--- appcast items ---"
+          grep -c "<item>" dist/appcast.xml || true
+          # The feed is public and fixed, so it is signed: an unsigned feed can
+          # have its channel tags and minimum-system-version edited without
+          # touching any update's own signature. Both channels must be present
+          # for a prerelease build to be reachable at all.
+          grep -o 'sparkle:channel="[^"]*"' dist/appcast.xml | sort | uniq -c || true
+
       - name: Delete the temporary keychain
         if: always()
         run: |
@@ -232,6 +324,7 @@ jobs:
             dist/PaneSpace-*-macos-arm64.zip
             dist/PaneSpace-*-macos-arm64.zip.sha256
             dist/PaneSpace-*-macos-arm64.zip.sig
+            dist/appcast.xml
           if-no-files-found: error
           retention-days: 1
 
