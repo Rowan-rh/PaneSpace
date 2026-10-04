@@ -279,19 +279,38 @@ jobs:
           # feed. Git reads the committed object.
           #
           # Only a genuinely missing branch or file counts as a first release.
-          # A network failure, a 5xx or an auth problem must fail the job: treating
-          # those as "first release" would wipe the feed's history and publish it.
+          # `git ls-remote --exit-code` distinguishes three outcomes and the
+          # difference matters: 0 = the branch exists, 2 = no matching ref,
+          # anything else = the remote could not be reached or refused us.
+          # Collapsing the last case into "first release" would wipe the feed's
+          # history and then publish it, which is far worse than a failed job.
           remote="https://github.com/$REPO.git"
-          if git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1; then
-            git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
-            if git show "FETCH_HEAD:appcast.xml" > "$input/appcast.xml" 2>/dev/null; then
-              echo "Previous appcast read from the $APPCAST_BRANCH branch; history preserved"
-            else
-              echo "The $APPCAST_BRANCH branch has no appcast.xml yet; generating from scratch"
-            fi
-          else
-            echo "The $APPCAST_BRANCH branch does not exist yet; generating from scratch (first release)"
-          fi
+          branch_state=0
+          git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1 || branch_state=$?
+          case "$branch_state" in
+            0)
+              git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+              # The shell creates the redirect target before git runs, so a
+              # failed `git show` leaves an empty appcast.xml behind --
+              # and generate_appcast would then read that empty file as the
+              # previous feed. It is removed, or the first release of the next
+              # version would inherit a broken base.
+              if git show "FETCH_HEAD:appcast.xml" > "$input/appcast.xml" 2>/dev/null; then
+                echo "Previous appcast read from the $APPCAST_BRANCH branch; history preserved"
+              else
+                rm -f "$input/appcast.xml"
+                echo "The $APPCAST_BRANCH branch has no appcast.xml yet; generating from scratch"
+              fi
+              ;;
+            2)
+              echo "The $APPCAST_BRANCH branch does not exist yet; generating from scratch (first release)"
+              ;;
+            *)
+              echo "::error::git ls-remote failed with status $branch_state for $remote"
+              echo "::error::This is not a first release. Refusing to regenerate the feed, because doing so would drop every historical entry."
+              exit 1
+              ;;
+          esac
 
           # The private key goes in on stdin and never in argv, matching the
           # convention the release signing step already uses.
@@ -328,8 +347,10 @@ jobs:
           cp "$input/appcast.xml" dist/appcast.xml
 
           # Real assertions, not a report: a mis-tagged feed is still a valid XML
-          # file, so the exit status has to carry the verdict.
-          python3 scripts/appcast-tool.py verify-appcast dist/appcast.xml "$PRERELEASE"
+          # file, so the exit status has to carry the verdict. The entry is
+          # located by its own version, not by position -- see the script.
+          python3 scripts/appcast-tool.py verify-appcast \
+            dist/appcast.xml "$VERSION" "$PRERELEASE"
 
           # A delta, when one exists, is part of the release rather than a
           # by-product: the appcast points at it, so a client that finds one and
@@ -488,28 +509,52 @@ jobs:
           # client a 404 until the upload finished.
           remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
 
-          # An orphan branch: the feed has no shared history with the source, so
-          # a force-update is a rewrite of one file rather than a rebase over
-          # unrelated commits. Each release is one commit, which is the audit
-          # trail the branch was chosen for.
-          if git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1; then
-            git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
-            git checkout -B "$APPCAST_BRANCH" FETCH_HEAD
-            cp dist/appcast.xml appcast.xml
-            git add appcast.xml
-            if git diff --cached --quiet; then
-              echo "appcast.xml is unchanged; nothing to publish"
-              exit 0
-            fi
-            git commit -m "appcast: $VERSION ($TAG)"
-          else
-            git checkout --orphan "$APPCAST_BRANCH"
-            git rm -rf --cached . >/dev/null 2>&1 || true
-            cp dist/appcast.xml appcast.xml
-            git add appcast.xml
-            git commit -m "appcast: $VERSION ($TAG)"
+          # The `appcast` branch is an orphan: the feed has no shared history
+          # with the source tree, and each release is one commit, which is the
+          # audit trail the branch was chosen for.
+          #
+          # GitHub-hosted runners have no global user.name/user.email, so a bare
+          # `git commit` fails with "Please tell me who you are". The identity
+          # is passed per-command rather than written to any config, so it
+          # cannot leak into another step or another repository.
+          GIT_AUTHOR='-c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com'
+          git_author() { git $GIT_AUTHOR "$@"; }
+
+          # Same three-way distinction as the build job: 0 = the branch exists,
+          # 2 = first release, anything else = the remote could not be reached.
+          # Treating a network or auth failure as "no branch" would create the
+          # branch from scratch and lose every published entry.
+          branch_state=0
+          git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1 || branch_state=$?
+          case "$branch_state" in
+            0)
+              git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+              # The new commit's parent is the commit just fetched, so the push
+              # below is a fast-forward and needs no --force. That is also the
+              # safety property: if anything else wrote to this branch since
+              # the fetch, the push is rejected instead of overwriting it.
+              git checkout -B "$APPCAST_BRANCH" FETCH_HEAD
+              ;;
+            2)
+              git checkout --orphan "$APPCAST_BRANCH"
+              # Everything checked out from the default branch has to leave the
+              # index, or the feed branch would carry the whole source tree.
+              git rm -rf --cached . >/dev/null 2>&1 || true
+              ;;
+            *)
+              echo "::error::git ls-remote failed with status $branch_state for the appcast branch"
+              echo "::error::Refusing to publish: this would silently replace the published feed."
+              exit 1
+              ;;
+          esac
+
+          cp dist/appcast.xml appcast.xml
+          git add appcast.xml
+          if git diff --cached --quiet; then
+            echo "appcast.xml is unchanged; nothing to publish"
+            exit 0
           fi
-          # Force because the branch is orphan and rewritten each release.
-          git push --force "$remote" "HEAD:refs/heads/$APPCAST_BRANCH"
+          git_author commit -m "appcast: $VERSION ($TAG)"
+          git push "$remote" "HEAD:refs/heads/$APPCAST_BRANCH"
           echo "Published appcast to $APPCAST_BRANCH"
           echo "Feed URL: https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$APPCAST_BRANCH/appcast.xml"
