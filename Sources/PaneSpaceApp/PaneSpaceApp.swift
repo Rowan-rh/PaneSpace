@@ -175,12 +175,16 @@ struct PaneSpaceApp: App {
                     appModel.isShowingSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
 
-                // Placed after "About PaneSpace", which the app-information group owns. A build with
-                // no version to compare against has no honest answer to a check, so the command is
-                // disabled rather than failing silently.
-                Divider()
-
+            // Its own group rather than an extra item in the settings group: `.appSettings` renders
+            // after "Settings…", which would put the check below the item the user just used to
+            // leave, instead of directly after "About PaneSpace" where macOS — and every Sparkle
+            // app — puts it.
+            //
+            // A build with no version to compare against has no honest answer to a check, so the
+            // command is disabled rather than failing silently.
+            CommandGroup(after: .appInfo) {
                 Button(L10n.text("Check for Updates…")) {
                     Task { await UpdateCheckAction.runAndAlert(appModel.updates) }
                 }
