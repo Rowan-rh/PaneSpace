@@ -1,9 +1,30 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // The stage-2 -> Sparkle preference migration is NOT done here. It has to
+        // run before `UpdateModel` reads `SUEnableAutomaticChecks`, and this
+        // callback is too late for that: `@StateObject` builds the model during
+        // `PaneSpaceApp`'s initialisation, which happens before the application
+        // finishes launching. It therefore runs at the top of `UpdateModel.init`,
+        // which is the only place guaranteed to be first.
+        //
+        // The updater controller itself is deliberately not created here either.
+        // `UpdateModel` owns it (see its initialiser), because a second
+        // `SPUStandardUpdaterController` would be a second `SPUUpdater` running
+        // its own update cycle against the same feed: two schedulers writing
+        // `SULastCheckTime`, two download attempts, and a delegate with no model
+        // attached competing over presentation. What ADR 0011 §4 actually
+        // requires is satisfied where it is created — on the main actor, with
+        // both delegates passed at init because the controller has no setter for
+        // them, and held in a stored property so Sparkle's weak references stay
+        // valid.
     }
 }
 

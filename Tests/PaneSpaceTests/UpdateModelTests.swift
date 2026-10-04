@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Sparkle
 import Synchronization
 import XCTest
 @testable import PaneSpaceApp
@@ -204,6 +205,17 @@ final class UpdateModelTests: XCTestCase {
         )
     }
 
+    /// The release tag behind whatever the banner is currently showing.
+    ///
+    /// `availableUpdate` carries whichever source produced the update — Sparkle's appcast item or the
+    /// stage-2 feed's release — so a test about the fallback path has to name the source it means.
+    /// Comparing display versions keeps these assertions about "which version is on the banner"
+    /// rather than about which code path produced it.
+    @MainActor
+    private func bannerVersion(_ model: UpdateModel) -> String? {
+        model.availableUpdate?.displayVersion
+    }
+
     @MainActor
     private func makeModel(
         feed: StubUpdateFeed,
@@ -278,7 +290,7 @@ final class UpdateModelTests: XCTestCase {
         let result = await model.checkNow()
 
         XCTAssertEqual(result, .available(release))
-        XCTAssertEqual(model.availableUpdate?.tag, "0.2.0")
+        XCTAssertEqual(bannerVersion(model), "0.2.0")
         XCTAssertFalse(model.isChecking)
         XCTAssertNotNil(model.lastCheckDate)
     }
@@ -349,7 +361,7 @@ final class UpdateModelTests: XCTestCase {
         let model = makeModel(feed: feed, clock: clock, defaults: makeDefaults())
 
         model.start()
-        await waitUntil { model.availableUpdate?.tag == "0.2.0" }
+        await waitUntil { self.bannerVersion(model) == "0.2.0" }
 
         // The feed has one more answer queued, so the next scheduled check consumes the failure.
         clock.finishSleeps()
@@ -358,7 +370,7 @@ final class UpdateModelTests: XCTestCase {
         model.stop()
 
         XCTAssertEqual(
-            model.availableUpdate?.tag,
+            self.bannerVersion(model),
             "0.2.0",
             "A transient failure must not hide a release that is still newer."
         )
@@ -605,7 +617,7 @@ final class UpdateModelTests: XCTestCase {
 
         model.includesPrereleases = true
         _ = await model.checkNow()
-        XCTAssertEqual(model.availableUpdate?.tag, "0.3.0-beta.1")
+        XCTAssertEqual(bannerVersion(model), "0.3.0-beta.1")
 
         model.includesPrereleases = false
 
@@ -890,7 +902,7 @@ final class UpdateModelTests: XCTestCase {
         let model = makeModel(feed: feed, defaults: defaults)
 
         _ = await model.checkNow()
-        XCTAssertEqual(model.availableUpdate?.tag, "0.2.0")
+        XCTAssertEqual(bannerVersion(model), "0.2.0")
 
         defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
         await waitUntil { model.skippedVersion == "0.2.0" }
@@ -963,7 +975,7 @@ final class UpdateModelTests: XCTestCase {
         let model = makeModel(feed: feed, defaults: defaults)
 
         _ = await model.checkNow()
-        XCTAssertEqual(model.availableUpdate?.tag, "0.2.0")
+        XCTAssertEqual(bannerVersion(model), "0.2.0")
 
         model.skip(version: "0.2.0")
 
@@ -1035,14 +1047,70 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertTrue(model.automaticallyChecks)
     }
 
+    /// A stage-2 user who had turned automatic checks off must not get a check
+    /// they declined, on the first launch after upgrading.
+    ///
+    /// The migration has to run before `UpdateModel.init` reads the preference.
+    /// When it ran in `applicationDidFinishLaunching` instead, the model was
+    /// built first (via `@StateObject`) and saw neither key, defaulted to
+    /// "checks on", and only learned the truth from the defaults notification
+    /// afterwards -- so `start()` could fire a check first.
     @MainActor
-    func testAutomaticChecksPreferenceIsPersisted() {
+    func testMigrationRunsBeforeTheModelReadsThePreference() {
+        let defaults = makeDefaults()
+        // The stage-2 state: checks off, and no Sparkle key yet.
+        defaults.set(false, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        XCTAssertNil(defaults.object(forKey: UpdateModel.automaticallyChecksKey))
+
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertFalse(
+            model.automaticallyChecks,
+            "A stage-2 user with checks off must not be migrated to on."
+        )
+        XCTAssertFalse(defaults.bool(forKey: UpdateModel.automaticallyChecksKey))
+        XCTAssertNil(
+            defaults.object(forKey: UpdatePreferences.supersededAutomaticChecksKey),
+            "The superseded key is removed once its value has been carried over."
+        )
+        // And a fresh model must see the same thing, i.e. the migration did not
+        // depend on the observer noticing the change.
+        let reopened = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertFalse(reopened.automaticallyChecks)
+    }
+
+    /// The same carry-over when the user had checks ON, and the case where both
+    /// keys already exist: Sparkle's wins, and the old key still goes away.
+    @MainActor
+    func testMigrationCarriesOverEnabledAndDefersToTheSparkleKey() {
+        let enabled = makeDefaults()
+        enabled.set(true, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        XCTAssertTrue(makeModel(feed: StubUpdateFeed(), defaults: enabled).automaticallyChecks)
+
+        let both = makeDefaults()
+        both.set(false, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        both.set(true, forKey: UpdateModel.automaticallyChecksKey)
+        XCTAssertTrue(
+            makeModel(feed: StubUpdateFeed(), defaults: both).automaticallyChecks,
+            "When both keys exist Sparkle's is authoritative."
+        )
+        XCTAssertNil(both.object(forKey: UpdatePreferences.supersededAutomaticChecksKey))
+    }
+
+    @MainActor
+    func testAutomaticChecksAreStoredOnlyInSparklesKey() {
         let defaults = makeDefaults()
         let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
 
         model.automaticallyChecks = false
 
         XCTAssertFalse(defaults.bool(forKey: UpdateModel.automaticallyChecksKey))
+        // The stage-2 key is not written as well: two copies drift, and a later read would
+        // resurrect a value the user has since changed in Sparkle's own UI.
+        XCTAssertNil(
+            defaults.object(forKey: UpdatePreferences.supersededAutomaticChecksKey),
+            "The superseded key must not be mirrored."
+        )
         let reopened = makeModel(feed: StubUpdateFeed(), defaults: defaults)
         XCTAssertFalse(reopened.automaticallyChecks)
     }
@@ -1060,8 +1128,175 @@ final class UpdateModelTests: XCTestCase {
 
     @MainActor
     func testEveryUpdateKeyIsResettable() {
-        for key in [UpdateModel.automaticallyChecksKey, UpdateModel.includesPrereleasesKey, UpdateModel.skippedVersionKey] {
-            XCTAssertTrue(PaneSpacePreferences.allKeys.contains(key), key)
+        // The update keys no longer all live in `allKeys`: the Sparkle ones are added separately
+        // because only some of them should be cleared. What matters is that reset reaches every key
+        // the update path can write.
+        for key in [
+            UpdateModel.automaticallyChecksKey,
+            UpdateModel.includesPrereleasesKey,
+            UpdateModel.skippedVersionKey
+        ] + UpdatePreferences.resettableKeys {
+            XCTAssertTrue(PaneSpacePreferences.updateKeys.contains(key), key)
         }
+    }
+
+    @MainActor
+    func testResetLeavesTheInternalSparkleStateAlone() {
+        let defaults = makeDefaults()
+        // Exactly the three keys ADR 0011 decision 3 says reset must not clear, each with a value a
+        // user would notice losing: an extra check, a replayed first-launch flow, a lost group id.
+        defaults.set(1_700_000_000, forKey: "SULastCheckTime")
+        defaults.set(true, forKey: "SUHasLaunchedBefore")
+        defaults.set("group-id", forKey: "SUUpdateGroupIdentifier")
+        defaults.set(true, forKey: "SUEnableAutomaticChecks")
+
+        PaneSpacePreferences.reset(in: defaults)
+
+        XCTAssertNotNil(defaults.object(forKey: "SULastCheckTime"))
+        XCTAssertNotNil(defaults.object(forKey: "SUHasLaunchedBefore"))
+        XCTAssertEqual(defaults.string(forKey: "SUUpdateGroupIdentifier"), "group-id")
+        XCTAssertNil(
+            defaults.object(forKey: "SUEnableAutomaticChecks"),
+            "A user-visible switch is cleared."
+        )
+        XCTAssertEqual(
+            UpdatePreferences.preservedKeys,
+            ["SULastCheckTime", "SUHasLaunchedBefore", "SUUpdateGroupIdentifier"]
+        )
+    }
+
+    @MainActor
+    func testBannerTakesTheSourceIndependentShape() {
+        // The same version arrives from two sources and must render identically, so the banner can
+        // be written once. The prerelease flag is what a label would read, and it is carried
+        // through from whichever source produced the update.
+        let release = AvailableUpdate.release(makeRelease("0.3.0-beta.1", prerelease: true))
+        let offer = AvailableUpdate.sparkle(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0-beta.1",
+                versionString: "30099",
+                releaseNotesURL: URL(string: "https://example.invalid/notes"),
+                isFromPrereleaseChannel: true
+            )
+        )
+
+        XCTAssertEqual(release.displayVersion, offer.displayVersion)
+        XCTAssertEqual(release.isPrerelease, offer.isPrerelease)
+        XCTAssertTrue(offer.isPrerelease)
+        XCTAssertEqual(
+            offer.matchesSkippedVersion("0.3.0-beta.1"),
+            true,
+            "A skip is matched against what the user sees."
+        )
+    }
+
+    @MainActor
+    func testSkippingASparkleOfferWritesTheKeySparkleReads() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let offer = SparkleUpdateOffer(
+            displayVersion: "0.3.0",
+            versionString: "30099",
+            releaseNotesURL: nil,
+            isFromPrereleaseChannel: false
+        )
+        model.presentSparkleOffer(offer)
+
+        model.skip(version: "0.3.0")
+
+        // Sparkle compares against `versionString` (the update's CFBundleVersion), not the display
+        // string. Writing the display string would leave the same version on offer next time.
+        XCTAssertEqual(defaults.string(forKey: "SUSkippedVersion"), "30099")
+        XCTAssertNil(model.availableUpdate, "The banner clears what was just skipped.")
+    }
+
+    @MainActor
+    func testAFinishedSparkleCycleEndsTheCheckingState() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+
+        XCTAssertFalse(model.isChecking)
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNotNil(model.lastCheckDate)
+        // The offer survives: the check completed and found it, so clearing it here would make a
+        // found update disappear at the moment it was confirmed.
+        XCTAssertNotNil(model.availableUpdate)
+    }
+
+    @MainActor
+    func testAScheduledSparkleFailureStaysOutOfTheManualState() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let failure = NSError(
+            domain: SUSparkleErrorDomain,
+            code: Int(SUError.appcastError.rawValue)
+        )
+
+        model.finishSparkleCycle(updateCheck: .updatesInBackground, error: failure)
+
+        XCTAssertEqual(model.lastAutomaticFailure, .invalidResponse)
+        XCTAssertNil(model.lastManualResult, "A background failure is not a manual result.")
+        XCTAssertFalse(model.isChecking)
+    }
+
+    @MainActor
+    func testAnInformationProbePublishesNothing() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updateInformation, error: nil)
+
+        // Sparkle's permission probe is not a check the user asked for, so it must not look like
+        // one in the UI.
+        XCTAssertNil(model.lastManualResult)
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testAnAbortedCheckDropsTheOfferItNeverConfirmed() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.dropStaleSparkleOffer()
+
+        XCTAssertNil(
+            model.availableUpdate,
+            "A banner may not keep offering a version the last check did not confirm."
+        )
+    }
+
+    @MainActor
+    func testSparkleErrorsFromAnotherDomainAreNotMistakenForFeedProblems() {
+        struct Transport: Error {}
+        XCTAssertEqual(UpdateModel.mapSparkleError(Transport()), .unreachable)
+    }
+
+    @MainActor
+    func testTheSkippedVersionIsReadFromSparklesKeyToo() {
+        let defaults = makeDefaults()
+        // Sparkle writes the skip itself, into its own key. The model has to notice that, or a skip
+        // made in Sparkle's window would leave the banner up.
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertEqual(model.skippedVersion, "30099")
     }
 }
