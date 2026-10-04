@@ -1,9 +1,12 @@
 ---
 status: accepted
 date: 2026-10-03
-revised: 2026-10-04（按 PaneSpace-TL 复审评论 01a10453-9c4a：补 hardened runtime 与
-  library validation 一节，改为 accepted，附启动验证与重跑的端到端证据）
+revised: 2026-10-04（第二轮，按 PaneSpace-TL 复审评论 01a10453-9c4a：补 hardened runtime
+  与 library validation 一节，改为 accepted，附启动验证与重跑的端到端证据；
+  第三轮，按 NERE-23 的 Rowan 确认 01a1072b-9303：放弃 delta 增量更新包，
+  见「决定 3」与「决定 7」）
 accepted: Rowan 2026-10-03 批准引入 Sparkle
+amended: Rowan 2026-10-04 确认暂不提供 delta 增量更新（见决定 7）
 deciders: PaneSpace-TL, Rowan
 consulted: NERE-21 (spike)
 ---
@@ -35,6 +38,12 @@ consulted: NERE-21 (spike)
 >      正确构建判为失败，改为接受 `certificate leaf` 与 `certificate root` 两种形式。
 >   3. **§7 端到端证据重跑**——签名标志改过之后原有证据不能沿用，重跑了一遍
 >      0.2.0 → 0.3.0，并补了 ad-hoc / 证书两种构建的启动验证，见 §7。
+> - **第三轮**（按 NERE-23 的 Rowan 确认评论 `01a1072b-9303`）：
+>   1. **放弃 delta 增量更新包**，新增决定 7。前两轮关于 delta 的说法（决定 3 的
+>      「上一版作为输入」和 §8 的「自动生成 delta」）建立在「两份归档能同时放进
+>      输入目录」这个前提上，而该前提经实测不成立——见决定 7。
+>   2. **§8 体积一节**删去「小版本升级的下载量会很小」的说法，改为记录完整包
+>      的实测体积。
 >
 > 另外 §6 改正了一处自相矛盾的表述（「固定 URL 指向最新 release」），并记下了
 > CR 指出的一处不准确说法（XPC services 并非「自动检测」）。
@@ -388,9 +397,11 @@ Wrote 1 new updates, updated 0 existing updates, and removed 0 old updates in ap
 ```
 
 **生成时必须把上一版 `appcast.xml` 一起作为输入**（`--previous-appcast`
-或把旧文件放进输入目录）。否则每次发布都从零生成，历史条目会丢，delta 也无从
-比较——只保留最新一个版本时，用户拿不到从更老版本直升的 delta。上面那次实测
+或把旧文件放进输入目录）。否则每次发布都从零生成，历史条目会丢。上面那次实测
 之所以「updated 0 existing updates」，是因为那是第一份 appcast。
+
+**注意：保留上一版 appcast 不等于能生成 delta。** 前一版归档不能放进输入目录，
+否则旧条目的下载 URL 会被改写成当前 tag 的前缀（404），详见决定 7。
 
 生成的 appcast 里，`edSignature` 由工具直接算好，PaneSpace 不需要自己拼 XML：
 
@@ -444,7 +455,7 @@ appcast 由本地 HTTP 服务（`127.0.0.1:8931`）提供。
 
 **成功升级：0.2.0 → 0.3.0，下载、验签、替换、重启全部走通。**
 
-应用抓到 appcast，验签通过，找到更新并下载 delta，然后 `Updater` 接管：
+应用抓到 appcast，验签通过，找到更新并下载，然后 `Updater` 接管：
 
 ```
 Sparkle: OK: EdDSA signature is correct for appcast
@@ -550,9 +561,8 @@ signature OK: clean.zip
 | `Updater.app`（进度代理） | 344 K |
 | `Resources/`（含 7 个本地化） | 364 K |
 
-`+3.0 M` 对一个文件管理器可以接受。注意增量包只有 3.6 M（压缩后），
-且 `generate_appcast` 会自动生成 **delta 更新**（本次实测生成了 6.8 K 的
-`PaneSpace30099-20099.delta`），小版本升级的下载量会很小。
+`+3.0 M` 对一个文件管理器可以接受。**更新时的下载量是完整包，本 ADR 不提供
+delta 增量更新包**（决定 7），当前实测每个完整包约 3.2 M。
 
 许可证是 **MIT**（`Copyright (c) 2006-2013 Andy Matuschak` 等，
 "Permission is hereby granted, free of charge..."）。GitHub API 把仓库 license
@@ -599,7 +609,8 @@ signature OK: clean.zip
 - GitHub 的 `prerelease` 标记**只影响 Releases 页面的展示，不参与**「有没有更新」
   的判断。判断依据是 appcast 条目上的通道标签。
 - 两个通道**放在同一份 appcast 里**，不维护两个 feed。
-- 生成时必须把**上一版 `appcast.xml` 作为输入**，否则历史条目和 delta 会丢。
+- 生成时必须把**上一版 `appcast.xml` 作为输入**，否则历史条目会丢。
+  **但这不等于会生成 delta**，两者互斥，理由见决定 7。
 - feed 不用 `latest/download`（`latest` 不跟 prerelease），放在固定 URL 上——
   专用分支、Pages 或固定 tag 的资产，三选一，由实现任务确定。
 
@@ -661,6 +672,68 @@ feed 放在公开的固定 URL 上，所以**对 feed 本身也签名**：
 DR 相同 + 无 quarantine 是必要条件，已验证。真实点击授权需要 Rowan 在
 正常桌面会话里做一次。
 
+### 决定 7：不生成 delta 增量更新包，老版本下载完整包
+
+**Rowan 于 2026-10-04 在 NERE-23（评论 `01a1072b-9303`）确认这个取舍。**
+本条取代前两轮关于 delta 的说法：决定 3 原写「生成时必须把上一版 `appcast.xml`
+作为输入，否则历史条目和 delta 会丢」，§8 原写 `generate_appcast` 会自动生成
+delta、小版本升级下载量很小。两处都作废。
+
+**规则：release workflow 的 `generate_appcast` 输入目录里只放本次发布的归档，
+不放任何历史归档。** 历史条目由上一版 `appcast.xml` 承载，各版本自己的下载 URL
+和 `edSignature` 逐字保留。
+
+**为什么不能两者兼得。** `generate_appcast` 在按 feed 分组**之前**就把
+`downloadUrlPrefix` 赋给输入目录里的每一个归档
+（`generate_appcast/Appcast.swift:40-43`）：
+
+```swift
+// Apply download and release notes prefixes
+for update in allUpdates {
+    update.downloadUrlPrefix = downloadURLPrefix
+    update.releaseNotesURLPrefix = releaseNotesURLPrefix
+}
+```
+
+而 delta 只能在新旧两份归档都在输入目录时生成。两者同时满足的条件互斥。
+
+**实测（Sparkle 2.10.0 的 SwiftPM 产物，两 tag 0.1.0 → 0.2.0，独立 Ed25519
+密钥，两份归档均由 `build-app.sh` 按发布方式构建、带 `SUPublicEDKey` 和
+`SURequireSignedFeed`）**：
+
+| 输入 | 0.1.0 条目的 URL | 0.1.0 的 `edSignature` | delta |
+| --- | --- | --- | --- |
+| A：只有 0.2.0 + `--download-url-prefix` | 保持 `.../v0.1.0/PaneSpace-0.1.0-macos-arm64.zip` | 逐字未变 | 无 |
+| B：两份归档 + `--download-url-prefix` | **被改写成 `.../v0.2.0/PaneSpace-0.1.0-macos-arm64.zip`（404）** | 重算 | 有，1,682 B |
+| C：只有 0.2.0，不带 prefix | 保持正确 | 逐字未变 | 无；新条目 URL 落到 feed 同目录，同样 404 |
+
+方案 B 的 delta 是 1,682 B，同版本完整包是 3,197,877 B——差约 1900 倍。
+**用一次必然 404 的旧版本下载，换一个 1.7 K 的包，不成立。** 方案 A 让老用户
+下载完整包，这是可接受的代价；Sparkle 拿到一份正确的完整包就正常更新。
+
+> 注：实测时工具会对 ad-hoc 签名的两份归档打印一行
+> `Warning: found mismatch code signing identity`。这只在两份归档的签名身份不同时
+> 出现，真实发布链里两个版本都由同一发布证书签名，不会触发。实测同时确认了
+> 无论是否出现该警告，delta 都照常生成——它不是被跳过，而是场景 B 独有的产物。
+
+**已知影响。** 每次更新都是完整下载，当前每个完整包约 3.2 M。这个体积在
+PaneSpace 的量级下已由 Rowan 接受。若将来完整包显著变大（例如嵌入更多框架
+或本地化资源），本条需要重新评估。
+
+**什么情况下可以重新引入 delta。** 三个前提同时成立才有意义：
+
+1. `generate_appcast` 能对不同归档指定不同前缀——要么上游支持按归档设置
+   `downloadUrlPrefix`，要么 PaneSpace 改为不给 `--download-url-prefix`、在
+   生成后自行补全每个条目的 URL 并重新签名整个 feed。后者是工具之外的一层
+   后处理，引入前要先算清维护成本。
+2. 旧版本的归档仍能从某个稳定位置取到（delta 需要它，且 appcast 的 delta
+   条目也必须指向一个真实存在的 URL）。
+3. 完整包的体积已经大到值得为此增加一层复杂度。
+
+在此之前，`release.yml` 里「如果生成了 delta 就一并上传」的分支保留着
+（appcast 指向的资产必须存在，否则客户端会整个更新失败），但当前输入方式下
+它不会被触发。
+
 ## 影响与后续
 
 **正面：**
@@ -674,17 +747,20 @@ DR 相同 + 无 quarantine 是必要条件，已验证。真实点击授权需�
 
 1. ~~**确认引入 Sparkle**~~ —— **已完成：Rowan 2026-10-03 批准**，本文档状态
    改为 `accepted`。
-2. 发行说明和 README 里附带 Sparkle 的 MIT 版权声明。
-3. release workflow 增加 `generate_appcast` 步骤，确定 feed 的固定 URL 载体
+2. ~~**确认 delta 与历史条目如何取舍**~~ —— **已完成：Rowan 2026-10-04 确认
+   暂不提供 delta**，见决定 7。
+3. 发行说明和 README 里附带 Sparkle 的 MIT 版权声明。
+4. release workflow 增加 `generate_appcast` 步骤，确定 feed 的固定 URL 载体
    （专用分支 / Pages / 固定 tag 的资产，三选一）。
-4. NERE-20（横幅、菜单、设置）按决定 2 改成基于 Sparkle：
+5. NERE-20（横幅、菜单、设置）按决定 2 改成基于 Sparkle：
    gentle reminders 接管展示，`UpdateModel` 降级为状态适配层。
-5. 实现 `PaneSpacePreferences.allKeys` 的 Sparkle 键集合与一次性迁移，
+6. 实现 `PaneSpacePreferences.allKeys` 的 Sparkle 键集合与一次性迁移，
    规则见决定 3（哪些清、哪些不清、为什么）。
-6. **在真实用户会话里验证一次 TCC 授权跨更新保持**（桌面/文稿/下载）。
-7. 首次安装仍需「仍要打开」（未公证），这是既定限制，不因本 ADR 改变。
-8. **如果将来改用 Developer ID + 公证，重新评估 §2b**：那时 Team ID 存在，
+7. **在真实用户会话里验证一次 TCC 授权跨升级保持**（桌面/文稿/下载）。
+8. 首次安装仍需「仍要打开」（未公证），这是既定限制，不因本 ADR 改变。
+9. **如果将来改用 Developer ID + 公证，重新评估 §2b**：那时 Team ID 存在，
    library validation 可以通过，hardened runtime 就该加回来。
+10. **如果完整包体积显著变大，重新评估决定 7 的 delta 取舍。**
 
 **已知可优化项（不阻断，不在本 ADR 承诺）：**
 
@@ -702,7 +778,8 @@ DR 相同 + 无 quarantine 是必要条件，已验证。真实点击授权需�
 
 **验签。** CryptoKit 的 `Curve25519.Signing.PublicKey.isValidSignature(_:for:)`
 足以替代 EdDSA，`scripts/ed25519.swift` 已经是这个实现，密钥格式可以复用。
-Sparkle 额外提供的 delta 更新、版本比较、回退到完整包，这些自研都要么放弃要么自己写。
+Sparkle 额外提供的版本比较、回退到完整包，这些自研都要么放弃要么自己写。
+delta 按决定 7 本来就不做，所以自研方案在这一项上不比采用 Sparkle 少做什么。
 
 **替换与重启。** 关键难点是**必须等主进程完全退出后才能替换**。一个辅助进程
 （`Autoupdate` 那种 launchd 一次性任务）等待 PID 退出，替换 `.app`，再拉起新版本。
@@ -743,5 +820,8 @@ Sparkle 额外提供的 delta 更新、版本比较、回退到完整包，这�
   `standardUserDriverShouldHandleShowingScheduledUpdate:andInImmediateFocus:`）
 - `SPUUserUpdateState.h`（`SPUUserUpdateChoiceSkip`）、`SPUUserDriver.h`
 - `SUSignatures.m`（EdDSA 签名解析与校验）
+- `generate_appcast/Appcast.swift`（`downloadUrlPrefix` 施加于全部分组前的所有归档，
+  决定 7 的依据）、`generate_appcast/ArchiveItem.swift`（`SURequireSignedFeed`
+  决定 feed 是否签名——所以不设 `SUPublicEDKey` 的本地构建生成的 feed 不会签名）
 - 阶段 1：NERE-18、`docs/adr/` 无（合入为 `0d2535b`）、`docs/RELEASING.md`
 - 阶段 2：NERE-19（`UpdateModel`、`GitHubReleaseFeed`）

@@ -335,8 +335,12 @@ jobs:
           # build one when both archives are present, and they cannot both be
           # present without corrupting the old URL. History is still preserved
           # (the previous appcast carries it), so a user on an older version
-          # gets a correct full download rather than a broken one. Raised with
-          # the TL as a possible ADR amendment rather than worked around here.
+          # gets a correct full download rather than a broken one.
+          #
+          # ADR 0011 decision 7 records this trade-off and the measurements
+          # behind it. Rowan confirmed it on 2026-10-04; the delta upload below
+          # is kept so that the assets an appcast can point at are never
+          # missing, but it does not trigger under this input layout.
           printf '%s' "$PANESPACE_ED25519_PRIVATE_KEY" \
             | "$generator" --ed-key-file - \
                 --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
