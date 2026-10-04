@@ -8,19 +8,23 @@ final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The one-time carry-over from the stage-2 key runs before anything reads the preference,
-        // so the first launch after upgrading sees the choice the user already made.
-        UpdatePreferences.migrateAutomaticChecks(in: .standard)
+        // The stage-2 -> Sparkle preference migration is NOT done here. It has to
+        // run before `UpdateModel` reads `SUEnableAutomaticChecks`, and this
+        // callback is too late for that: `@StateObject` builds the model during
+        // `PaneSpaceApp`'s initialisation, which happens before the application
+        // finishes launching. It therefore runs at the top of `UpdateModel.init`,
+        // which is the only place guaranteed to be first.
         //
-        // The updater controller itself is deliberately NOT created here. `UpdateModel` owns it
-        // (see its initialiser), because a second `SPUStandardUpdaterController` would be a second
-        // `SPUUpdater` running its own update cycle against the same feed: two schedulers writing
-        // `SULastCheckTime`, two download attempts, and a delegate with no model attached competing
-        // over presentation. What ADR 0011 §4 actually requires is satisfied where it is created —
-        // on the main actor, with both delegates passed at init because `SPUStandardUpdaterController`
-        // has no setter for them, and held in a stored property so Sparkle's weak references stay
-        // valid. `@StateObject` initialises before this callback runs, so a controller created here
-        // could not be handed to the model that has to receive its callbacks.
+        // The updater controller itself is deliberately not created here either.
+        // `UpdateModel` owns it (see its initialiser), because a second
+        // `SPUStandardUpdaterController` would be a second `SPUUpdater` running
+        // its own update cycle against the same feed: two schedulers writing
+        // `SULastCheckTime`, two download attempts, and a delegate with no model
+        // attached competing over presentation. What ADR 0011 §4 actually
+        // requires is satisfied where it is created — on the main actor, with
+        // both delegates passed at init because the controller has no setter for
+        // them, and held in a stored property so Sparkle's weak references stay
+        // valid.
     }
 }
 

@@ -149,6 +149,18 @@ final class UpdateModel: ObservableObject {
         currentVersion: SemanticVersion? = AppVersion.current,
         updaterController: SPUStandardUpdaterController? = nil
     ) {
+        // The carry-over from the stage-2 key has to happen here, before anything
+        // below reads the preference, and not in `applicationDidFinishLaunching`:
+        // `@StateObject` builds this model before that callback runs, so a
+        // migration there would arrive after the read below and leave the model
+        // holding the default ("checks on") until the defaults notification
+        // corrected it. `start()` could run first, and a user who had turned
+        // automatic checks off in stage 2 would get one check they had declined.
+        //
+        // It is idempotent (guarded by `hasMigratedUpdatePreferences`), so calling
+        // it on every launch costs one UserDefaults read.
+        UpdatePreferences.migrateAutomaticChecks(in: defaults)
+
         self.feed = feed
         self.clock = clock
         self.defaults = defaults

@@ -10,7 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  # A single group for every release, deliberately without the ref in the name.
+  # The `appcast` branch is read-modify-write: the build job reads the previous
+  # feed, the publish job writes the new one. Two releases doing that at once
+  # would let the second commit drop the first one's entry, and that entry is
+  # the only record of a version that already shipped. With one group they
+  # queue; `cancel-in-progress: false` makes the second wait rather than kill
+  # the first mid-upload.
+  group: release-appcast
   cancel-in-progress: false
 
 jobs:
@@ -236,44 +243,54 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
           REPO: ${{ github.repository }}
-          APPCAST_URL: ${{ secrets.PANESPACE_APPCAST_URL }}
+          APPCAST_BRANCH: appcast
           PANESPACE_ED25519_PRIVATE_KEY: ${{ secrets.PANESPACE_ED25519_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          sparkle_src="$PWD/.build/checkouts/Sparkle"
-          if [[ ! -d "$sparkle_src" ]]; then
-            echo "::error::Sparkle checkout is missing; the app build above must resolve it first"
+          # The generator that ships with the pinned Sparkle release. SwiftPM
+          # already verified this artifact against Package.resolved when it
+          # resolved the dependency, and it is byte-identical to the framework the
+          # app was linked against. Building the generator from the checkout
+          # instead would compile the same source a second time, slowly, with
+          # signing settings that have never run in CI.
+          generator="$PWD/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+          if [[ ! -x "$generator" ]]; then
+            echo "::error::generate_appcast is missing from the SwiftPM artifact bundle; the app build above must have resolved Sparkle"
             exit 1
           fi
-          # Built from the pinned checkout, so the generator is the same version as
-          # the framework the app was linked against. An x86_64 slice is asked for
-          # explicitly: the runner is arm64, but the appcast this produces is
-          # platform-independent and the archive already names arm64.
-          xcodebuild -project "$sparkle_src/Sparkle.xcodeproj" \
-            -scheme generate_appcast -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/appcast-dd" \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO build
 
-          generator="$RUNNER_TEMP/appcast-dd/Build/Products/Release/generate_appcast"
-          [[ -x "$generator" ]] || { echo "::error::generate_appcast was not produced"; exit 1; }
+          # Copy, never move: the zip has to stay at dist/ for the upload step and
+          # for the publish job that re-verifies it. A move left dist/ without it
+          # and `if-no-files-found: error` did not catch that, because the other
+          # globs still matched.
+          input=dist/appcast-input
+          mkdir -p "$input"
+          cp dist/PaneSpace-"$VERSION"-macos-arm64.zip "$input/"
+          cp dist/PaneSpace-"$VERSION"-macos-arm64.zip.sig "$input/"
 
-          mkdir -p dist/appcast-input
-          mv dist/PaneSpace-"$VERSION"-macos-arm64.zip dist/appcast-input/
-          [[ -f "dist/PaneSpace-$VERSION-macos-arm64.zip.sig" ]] \
-            && cp "dist/PaneSpace-$VERSION-macos-arm64.zip.sig" dist/appcast-input/
-
-          # The previous appcast is an input, not a convenience: without it
-          # generate_appcast rebuilds the feed from these archives alone, every
-          # historical entry disappears and no delta can be computed, so a user
-          # on an older version gets a full download or nothing. It is fetched
-          # from the same fixed URL the app is pointed at, which is what makes
-          # that URL the one source of truth. A 404 is the normal first release.
-          if curl -fsSL --max-time 60 "$APPCAST_URL" -o dist/appcast-input/appcast.xml; then
-            echo "Previous appcast fetched from $APPCAST_URL; history and deltas preserved"
+          # The previous appcast is an input, not a convenience: without it every
+          # historical entry disappears and a user on an older version gets a full
+          # download or nothing.
+          #
+          # It is read from the `appcast` branch with git rather than from the raw
+          # URL the app is pointed at. raw.githubusercontent.com is CDN-cached for
+          # roughly five minutes, so a fetch right after a release can return the
+          # previous-but-one appcast and silently drop the newest entry from the
+          # feed. Git reads the committed object.
+          #
+          # Only a genuinely missing branch or file counts as a first release.
+          # A network failure, a 5xx or an auth problem must fail the job: treating
+          # those as "first release" would wipe the feed's history and publish it.
+          remote="https://github.com/$REPO.git"
+          if git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+            if git show "FETCH_HEAD:appcast.xml" > "$input/appcast.xml" 2>/dev/null; then
+              echo "Previous appcast read from the $APPCAST_BRANCH branch; history preserved"
+            else
+              echo "The $APPCAST_BRANCH branch has no appcast.xml yet; generating from scratch"
+            fi
           else
-            echo "No previous appcast at $APPCAST_URL (first release); generating from scratch"
-            rm -f dist/appcast-input/appcast.xml
+            echo "The $APPCAST_BRANCH branch does not exist yet; generating from scratch (first release)"
           fi
 
           # The private key goes in on stdin and never in argv, matching the
@@ -285,21 +302,65 @@ jobs:
             # that Sparkle always allows. Nothing here creates a second feed.
             channel_args=(--channel beta)
           fi
+          # --download-url-prefix applies to every archive in the input
+          # directory, so older archives must NOT be put there. Measured on a
+          # two-tag run:
+          #
+          #   prefix + only the new archive  -> 0.1.0 keeps its own v0.1.0 URL
+          #                                      and its edSignature, 0.2.0 gets
+          #                                      the current prefix. Correct.
+          #   prefix + old archives too      -> 0.1.0's URL is rewritten to the
+          #                                      v0.2.0 prefix, a 404.
+          #
+          # The cost is that no delta is generated: generate_appcast can only
+          # build one when both archives are present, and they cannot both be
+          # present without corrupting the old URL. History is still preserved
+          # (the previous appcast carries it), so a user on an older version
+          # gets a correct full download rather than a broken one. Raised with
+          # the TL as a possible ADR amendment rather than worked around here.
           printf '%s' "$PANESPACE_ED25519_PRIVATE_KEY" \
             | "$generator" --ed-key-file - \
                 --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
                 "${channel_args[@]}" \
-                dist/appcast-input
+                "$input"
 
           # generate_appcast writes into its input directory.
-          cp dist/appcast-input/appcast.xml dist/appcast.xml
-          echo "--- appcast items ---"
-          grep -c "<item>" dist/appcast.xml || true
-          # The feed is public and fixed, so it is signed: an unsigned feed can
-          # have its channel tags and minimum-system-version edited without
-          # touching any update's own signature. Both channels must be present
-          # for a prerelease build to be reachable at all.
-          grep -o 'sparkle:channel="[^"]*"' dist/appcast.xml | sort | uniq -c || true
+          cp "$input/appcast.xml" dist/appcast.xml
+
+          # Real assertions, not a report: a mis-tagged feed is still a valid XML
+          # file, so the exit status has to carry the verdict.
+          python3 scripts/appcast-tool.py verify-appcast dist/appcast.xml "$PRERELEASE"
+
+          # A delta, when one exists, is part of the release rather than a
+          # by-product: the appcast points at it, so a client that finds one and
+          # cannot download it fails the whole update. Copied, never moved, and
+          # asserted below like every other asset.
+          shopt -s nullglob
+          deltas=("$input"/*.delta)
+          if (( ${#deltas[@]} > 0 )); then
+            cp "$input"/*.delta dist/
+            echo "Publishing ${#deltas[@]} delta file(s): ${deltas[*]##*/}"
+          else
+            echo "No delta generated this run; see the note on --download-url-prefix above"
+          fi
+
+      - name: Assert every release asset is present
+        run: |
+          set -euo pipefail
+          missing=()
+          for asset in dist/appcast.xml dist/PaneSpace-*-macos-arm64.zip \
+                       dist/PaneSpace-*-macos-arm64.zip.sha256 \
+                       dist/PaneSpace-*-macos-arm64.zip.sig; do
+            # shellcheck disable=SC2053  # glob is intentional
+            ls $asset >/dev/null 2>&1 || missing+=("$asset")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing release asset(s): ${missing[*]}"
+            echo "::error::Present in dist/: $(ls dist/)"
+            exit 1
+          fi
+          ls -la dist/
+          echo "All release assets present"
 
       - name: Delete the temporary keychain
         if: always()
@@ -375,6 +436,15 @@ jobs:
           set -euo pipefail
           archive="PaneSpace-$VERSION-macos-arm64.zip"
           assets=("dist/$archive" "dist/$archive.sha256" "dist/$archive.sig")
+          # Deltas ride along when the build produced any. The appcast already
+          # references them, so a release that shipped the feed without them
+          # would hand every client a download URL that 404s.
+          shopt -s nullglob
+          for delta in dist/*.delta; do assets+=("$delta"); done
+          if [[ ! -f dist/appcast.xml ]]; then
+            echo "::error::dist/appcast.xml is missing; refusing to publish a release with no feed"
+            exit 1
+          fi
           # `gh release view` finds drafts as well as published releases, while
           # GET /releases/tags/{tag} returns published ones only. Without this,
           # re-running the workflow for the same tag would create a second,
@@ -403,3 +473,43 @@ jobs:
               "${prerelease_flag[@]}"
           fi
           echo "Release assets uploaded"
+
+      - name: Publish the appcast to the appcast branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          APPCAST_BRANCH: appcast
+        run: |
+          set -euo pipefail
+          # Committed only after every asset above is on the release. The feed
+          # is what clients read to discover an update, and its enclosure URLs
+          # point at this release's assets: publishing it first would hand every
+          # client a 404 until the upload finished.
+          remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+
+          # An orphan branch: the feed has no shared history with the source, so
+          # a force-update is a rewrite of one file rather than a rebase over
+          # unrelated commits. Each release is one commit, which is the audit
+          # trail the branch was chosen for.
+          if git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+            git checkout -B "$APPCAST_BRANCH" FETCH_HEAD
+            cp dist/appcast.xml appcast.xml
+            git add appcast.xml
+            if git diff --cached --quiet; then
+              echo "appcast.xml is unchanged; nothing to publish"
+              exit 0
+            fi
+            git commit -m "appcast: $VERSION ($TAG)"
+          else
+            git checkout --orphan "$APPCAST_BRANCH"
+            git rm -rf --cached . >/dev/null 2>&1 || true
+            cp dist/appcast.xml appcast.xml
+            git add appcast.xml
+            git commit -m "appcast: $VERSION ($TAG)"
+          fi
+          # Force because the branch is orphan and rewritten each release.
+          git push --force "$remote" "HEAD:refs/heads/$APPCAST_BRANCH"
+          echo "Published appcast to $APPCAST_BRANCH"
+          echo "Feed URL: https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$APPCAST_BRANCH/appcast.xml"

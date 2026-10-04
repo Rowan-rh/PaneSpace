@@ -1047,6 +1047,56 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertTrue(model.automaticallyChecks)
     }
 
+    /// A stage-2 user who had turned automatic checks off must not get a check
+    /// they declined, on the first launch after upgrading.
+    ///
+    /// The migration has to run before `UpdateModel.init` reads the preference.
+    /// When it ran in `applicationDidFinishLaunching` instead, the model was
+    /// built first (via `@StateObject`) and saw neither key, defaulted to
+    /// "checks on", and only learned the truth from the defaults notification
+    /// afterwards -- so `start()` could fire a check first.
+    @MainActor
+    func testMigrationRunsBeforeTheModelReadsThePreference() {
+        let defaults = makeDefaults()
+        // The stage-2 state: checks off, and no Sparkle key yet.
+        defaults.set(false, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        XCTAssertNil(defaults.object(forKey: UpdateModel.automaticallyChecksKey))
+
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertFalse(
+            model.automaticallyChecks,
+            "A stage-2 user with checks off must not be migrated to on."
+        )
+        XCTAssertFalse(defaults.bool(forKey: UpdateModel.automaticallyChecksKey))
+        XCTAssertNil(
+            defaults.object(forKey: UpdatePreferences.supersededAutomaticChecksKey),
+            "The superseded key is removed once its value has been carried over."
+        )
+        // And a fresh model must see the same thing, i.e. the migration did not
+        // depend on the observer noticing the change.
+        let reopened = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertFalse(reopened.automaticallyChecks)
+    }
+
+    /// The same carry-over when the user had checks ON, and the case where both
+    /// keys already exist: Sparkle's wins, and the old key still goes away.
+    @MainActor
+    func testMigrationCarriesOverEnabledAndDefersToTheSparkleKey() {
+        let enabled = makeDefaults()
+        enabled.set(true, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        XCTAssertTrue(makeModel(feed: StubUpdateFeed(), defaults: enabled).automaticallyChecks)
+
+        let both = makeDefaults()
+        both.set(false, forKey: UpdatePreferences.supersededAutomaticChecksKey)
+        both.set(true, forKey: UpdateModel.automaticallyChecksKey)
+        XCTAssertTrue(
+            makeModel(feed: StubUpdateFeed(), defaults: both).automaticallyChecks,
+            "When both keys exist Sparkle's is authoritative."
+        )
+        XCTAssertNil(both.object(forKey: UpdatePreferences.supersededAutomaticChecksKey))
+    }
+
     @MainActor
     func testAutomaticChecksAreStoredOnlyInSparklesKey() {
         let defaults = makeDefaults()
