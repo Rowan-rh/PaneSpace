@@ -1,9 +1,16 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // The one-time carry-over from the stage-2 key runs before anything reads the preference,
+        // so the first launch after upgrading sees the choice the user already made.
+        UpdatePreferences.migrateAutomaticChecks(in: .standard)
     }
 }
 
