@@ -29,6 +29,13 @@ struct ContentView: View {
         }
         .tint(accent)
         .background(WindowFrameAutosaver())
+        // A top inset rather than an overlay, so the workspace below is pushed down instead of
+        // covered, and the banner spans the window rather than any one pane — an update is a
+        // property of the application, and a banner inside a pane would be hidden by whichever
+        // pane layout the user happens to have chosen.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            UpdateBannerView(updates: appModel.updates)
+        }
         .background(PaneKeyboardMonitor { command in
             switch command {
             case let .cycle(backward):
