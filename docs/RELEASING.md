@@ -221,12 +221,24 @@ feed URL，否则 `scripts/build-app.sh` 直接报错退出。** 没有它就会
 ad-hoc 签名的 designated requirement 等于 cdhash，即**每次构建都变**。系统据此判定「这是一个新应用」，于是每次更新后桌面、文稿、下载、可移除卷等 TCC 授权都会失效，用户必须重新授权。用固定的证书签名后，designated requirement 变成：
 
 ```text
-designated => identifier "org.panespace.app" and certificate leaf = H"..."
+designated => identifier "org.panespace.app" and certificate root = H"..."
 ```
 
-（自签名证书的叶子证书就是它自己的根，所以 `codesign` 给出的就是 `leaf` 这一种形式；
-换成真正的 CA 签发的证书时，同一位置可能写成 `certificate root`，两种都表示「不是
-按每次构建变化的 cdhash」。）
+自签名证书的叶子证书就是它自己的根——`generate-signing-identity.sh` 生成的证书
+`subject` 与 `issuer` 相同、链上只有这一张，所以它同时是叶子也是根，`codesign` 按根来
+写。这也是实测结果，不是推断：本机用该脚本生成的证书签名宿主、`Autoupdate` 和
+`Sparkle.framework`，三处都是
+
+```text
+designated => identifier … and certificate root = H"10c7ae58d8768c2880daa1669939c74b58736790"
+```
+
+上面那句 DR 里出现 `root` 还是 `leaf`，取决于同一张证书被归到哪一头，不是两种可以自选
+的写法。用真正的 CA 签发时通常是链上另有根、DR 写成 `anchor apple generic and certificate
+leaf = H"..."`；那种证书本机没有，这条未经实测，换 CA 时需要重新确认。
+
+（`docs/adr/0011-in-app-updates.md` 里记录的 `certificate leaf` 是早前用另一张开发证书
+测得的结果，与这里的脚本产物不是同一张证书，引用时注意区分。）
 
 发布 workflow 会在 designated requirement 里出现 `cdhash` 时直接失败，防止回归到 ad-hoc 状态。
 
