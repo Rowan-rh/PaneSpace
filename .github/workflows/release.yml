@@ -376,7 +376,7 @@ jobs:
           for asset in dist/appcast.xml dist/PaneSpace-*-macos-arm64.zip \
                        dist/PaneSpace-*-macos-arm64.zip.sha256 \
                        dist/PaneSpace-*-macos-arm64.zip.sig; do
-            # shellcheck disable=SC2053  # glob is intentional
+            # shellcheck disable=SC2086  # glob is intentional; quoting it would test a literal name
             ls $asset >/dev/null 2>&1 || missing+=("$asset")
           done
           if (( ${#missing[@]} > 0 )); then
@@ -521,8 +521,11 @@ jobs:
           # `git commit` fails with "Please tell me who you are". The identity
           # is passed per-command rather than written to any config, so it
           # cannot leak into another step or another repository.
-          GIT_AUTHOR='-c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com'
-          git_author() { git $GIT_AUTHOR "$@"; }
+          git_author() {
+            git -c user.name=github-actions[bot] \
+                -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+                "$@"
+          }
 
           # Same three-way distinction as the build job: 0 = the branch exists,
           # 2 = first release, anything else = the remote could not be reached.
