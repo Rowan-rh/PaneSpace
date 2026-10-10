@@ -62,6 +62,45 @@ fail() {
 
 [[ -x "$executable" ]] || fail "no executable at $executable" "build the app first: make app"
 
+# ---------------------------------------------------------------------------
+# Read the host's actual entitlements, and refuse the two that would make the
+# rest of this script lie.
+#
+# This has to come before the controls, not after. The skip branch below is
+# reached only when the negative control could be injected, and it reads that
+# as "this machine does not enforce the restriction". If the bundle itself
+# carries allow-dyld-environment-variables, then a control injected says
+# nothing about the machine -- it just says the bundle's own configuration lets
+# DYLD_* through -- and a host that was injected for that reason would be
+# reported as a skipped pass. That is the exact defect check (4) exists to
+# catch. get-task-allow is refused for the same reason: it is a debugger
+# entitlement and it has no business on a shipped bundle.
+#
+# So the host is checked up front, on its own signature, and a bundle carrying
+# either key fails here without reaching any branch. That holds no matter what
+# the controls say, and no matter which entitlements the controls were signed
+# with -- which is why the controls do not take their entitlements from a file
+# at all.
+#
+# Read into a variable and matched there rather than piped into grep: under
+# `set -o pipefail` a `codesign | grep -q` that finds nothing is indistinguishable
+# from codesign itself failing, and this script would treat a failed read as a
+# clean one.
+host_entitlements=""
+if host_entitlements="$(codesign -d --entitlements - --xml "$app" 2>/dev/null)"; then
+    if [[ "$host_entitlements" == *com.apple.security.cs.allow-dyld-environment-variables* ]]; then
+        fail "the host carries com.apple.security.cs.allow-dyld-environment-variables" \
+            "this bundle would accept DYLD_INSERT_LIBRARIES by design; it is not the build this smoke test can vouch for" \
+            "this is checked before the injection tests on purpose: otherwise a permissive host is let off by the branch that reports a non-enforcing machine"
+    fi
+    if [[ "$host_entitlements" == *com.apple.security.security.get-task-allow* ]] \
+        || [[ "$host_entitlements" == *com.apple.security.get-task-allow* ]]; then
+        fail "the host carries com.apple.security.get-task-allow" \
+            "a debugger entitlement does not belong on a shipped bundle"
+    fi
+    print "Host entitlements do not weaken the DYLD restriction"
+fi
+
 # A GUI session is a precondition, not something this script can substitute
 # for. Checking it here turns an opaque WindowServer crash into one line that
 # says what is wrong with the runner.
@@ -95,28 +134,48 @@ xcrun --sdk macosx clang -dynamiclib -o "$probe_dylib" \
 # Same source for both controls; only the signature differs. See
 # scripts/dyld-injection-target.c for why this cannot be the probe source.
 #
-# The negative control is signed with hardened runtime AND the host's own
-# entitlement file, which is deliberate. Signing it with `-o runtime` and no
-# entitlements at all looks more minimal but measures the wrong thing: hardened
-# runtime turns on library validation by default, so an unsigned probe dylib is
-# refused on that basis alone and the control is refused whether or not this
-# machine strips DYLD_*. On a runner that does not enforce the DYLD
-# restriction the control would then still read as "refused", the smoke test
-# would take that as a hardening failure, and it would fail a perfectly good
-# build -- turning the one case the control exists to catch into a false alarm.
+# The negative control is signed with hardened runtime and exactly one
+# entitlement, disable-library-validation, written out here rather than read
+# from scripts/PaneSpace.entitlements. Two reasons, both about what the
+# control is allowed to say:
 #
-# Carrying the host's entitlements removes that confound:
-# disable-library-validation is exactly what lets the host load the probe if
-# DYLD_* ever did reach it, so from here on the only gate left is the DYLD
-# strip itself. The file is read from the build rather than inlined, so the
-# control follows the host's configuration if that file ever changes.
+# The entitlement itself. Hardened runtime turns on library validation by
+# default, so an unsigned probe dylib is refused on that basis alone and the
+# control is refused whether or not this machine strips DYLD_*. On a runner
+# that does not enforce the restriction, a control signed with no entitlements
+# at all would still read as "refused", the smoke test would take that as a
+# hardening failure, and it would fail a perfectly good build -- turning the
+# one case the control exists to catch into a false alarm.
+# disable-library-validation removes that confound: it is exactly what lets
+# the host load the probe if DYLD_* ever did reach it, so from here on the only
+# gate left is the DYLD strip itself.
+#
+# The source of the file. When the control was signed with the host's own
+# entitlements file, a bundle that had been widened to carry
+# allow-dyld-environment-variables produced an injected control, the skip
+# branch took over, and a bundle that accepts DYLD_* by design exited 0. A
+# control signed from a fixed set generated here can never be widened by
+# editing a file, so the only thing that can inject it is a machine that does
+# not enforce the restriction. The host is checked separately above, which
+# covers the same ground for the bundle itself.
 control_target="$workdir/probe-control"
 runtime_target="$workdir/probe-runtime-control"
+control_entitlements="$workdir/control.entitlements"
+cat > "$control_entitlements" <<'ENTITLEMENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
+ENTITLEMENTS
 xcrun --sdk macosx clang -o "$control_target" \
     "$project_dir/scripts/dyld-injection-target.c"
 cp "$control_target" "$runtime_target"
 if ! codesign --force --options runtime \
-    --entitlements "$project_dir/scripts/PaneSpace.entitlements" \
+    --entitlements "$control_entitlements" \
     --sign - "$runtime_target" 2>/dev/null; then
     fail "could not sign the negative control with hardened runtime" \
         "without it the control cannot say whether this machine enforces the restriction"
@@ -139,12 +198,13 @@ if ! run_control "$control_target" "$workdir/control.marker"; then
 fi
 print "Positive control: DYLD_INSERT_LIBRARIES works on a non-hardened process"
 
-# Negative control: identical code, hardened runtime, no entitlements. On a
-# machine that enforces the restriction this must be refused, and that is what
-# makes the host's refusal a statement about the host.
+# Negative control: identical code, hardened runtime, and one entitlement
+# (disable-library-validation) generated above. On a machine that enforces the
+# restriction this must be refused, and that is what makes the host's refusal a
+# statement about the host.
 if run_control "$runtime_target" "$workdir/runtime.marker"; then
     runtime_enforced=false
-    print "Negative control: hardened runtime WITH the host's entitlements WAS injected"
+    print "Negative control: hardened runtime WITH only disable-library-validation WAS injected"
 else
     runtime_enforced=true
     print "Negative control: injection refused by hardened runtime, as expected"
@@ -234,12 +294,22 @@ if [[ -f "$injected_marker" ]]; then
     # entitlement, so this is the only check that goes soft, and only on a host
     # that has already shown it does not enforce the rule.
     print "skipped: this machine does not enforce hardened-runtime DYLD restrictions"
-    print "         the negative control -- hardened runtime, the same entitlements"
-    print "         as this host -- accepted the same injection, so this host's"
-    print "         result says nothing about PaneSpace. build-app.sh still asserts"
-    print "         the runtime flag and refuses allow-dyld-environment-variables."
+    print "         the negative control -- hardened runtime, only"
+    print "         disable-library-validation -- accepted the same injection, so"
+    print "         this host's result says nothing about PaneSpace. build-app.sh"
+    print "         still asserts the runtime flag, and the check at the top of"
+    print "         this script refuses allow-dyld-environment-variables."
 else
     print "DYLD_INSERT_LIBRARIES is ignored"
+    if [[ "$runtime_enforced" == "false" ]]; then
+        # The host is stricter than the control, which is not a failure, but it
+        # is not what the control predicted either and it is worth saying so
+        # rather than leaving a reader to assume the control ran as designed.
+        print "note: the negative control was injectable while this host was not,"
+        print "      so the host is more restricted than the control measures."
+        print "      The host's own entitlements were checked above and carry"
+        print "      nothing that widens DYLD, so this pass stands."
+    fi
 fi
 
 kill "$app_pid" 2>/dev/null || true
