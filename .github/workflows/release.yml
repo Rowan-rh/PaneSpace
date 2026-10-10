@@ -95,10 +95,32 @@ jobs:
       # On a dispatched run the checkout has to follow the tag, not the branch the
       # workflow was selected on: the scripts that produce and verify the feed are
       # that tag's own, the same reason publish-appcast checks out the tag.
+      #
+      # `refs/tags/` is spelled out rather than passing the bare name because a bare
+      # name also resolves to a branch of the same name, and a recovery run that
+      # silently checked out some branch is the one thing that must not happen here.
+      - name: Assert the tag exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # A push event is its own proof, so only a dispatched run is checked.
+          if [[ -z "$TAG" ]]; then
+            exit 0
+          fi
+          if ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::refs/tags/$TAG does not exist on $GITHUB_REPOSITORY"
+            echo "::error::A recovery run must name a tag that was already pushed. Left unchecked, gh release create would create it on the default branch from a typo."
+            exit 1
+          fi
+          echo "refs/tags/$TAG exists"
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Derive version from tag
         id: version
@@ -538,6 +560,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tag, not the branch the workflow was selected on. This job verifies
+          # the archive against the public key committed *at that tag* -- and
+          # `gh release create` below is allowed to create a tag, so a checkout
+          # that landed on some other branch would verify the release against the
+          # wrong key. Same reason the build job follows the tag.
+          ref: ${{ format('refs/tags/{0}', needs.build.outputs.tag) }}
 
       - name: Download release assets
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
