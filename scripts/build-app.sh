@@ -230,6 +230,43 @@ if [[ ! -f "$entitlements_file" ]]; then
     exit 1
 fi
 
+# What the host is allowed to carry is written out here rather than taken from
+# the entitlements file. That file is editable text: the post-signature check
+# below asks "does the signature match the file", and a second key added to the
+# file would be signed, would match, and would quietly hand the host a
+# capability nobody reviewed. Pinning the grant in the script means the
+# entitlements a reader approves are the only ones a build can produce -- adding
+# a capability has to be a visible edit to this list, not a silent edit to a
+# plist. The value is pinned with the key, because disable-library-validation set
+# to false would pass every check here and still die at launch. Checked before
+# anything is signed, so an over-broad file never reaches a signature at all.
+PaneSpaceENTITLEMENTS_KEYS=(
+    com.apple.security.cs.disable-library-validation
+)
+grants_dir="$(mktemp -d)"
+trap 'rm -rf "$grants_dir"' EXIT
+{
+    print -r -- '<?xml version="1.0" encoding="UTF-8"?>'
+    print -r -- '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    print -r -- '<plist version="1.0">'
+    print -r -- '<dict>'
+    for key in "${PaneSpaceENTITLEMENTS_KEYS[@]}"; do
+        print -r -- "	<key>$key</key>"
+        print -r -- '	<true/>'
+    done
+    print -r -- '</dict>'
+    print -r -- '</plist>'
+} | plutil -convert xml1 -o - - > "$grants_dir/approved.plist"
+plutil -convert xml1 -o - "$entitlements_file" > "$grants_dir/declared.plist"
+if ! cmp -s "$grants_dir/approved.plist" "$grants_dir/declared.plist"; then
+    print -u2 "error: $entitlements_file does not match the grant in this script"
+    print -u2 "       the script grants exactly: ${PaneSpaceENTITLEMENTS_KEYS[*]}"
+    print -u2 "       granting another capability means editing that list deliberately"
+    print -u2 "       declared:"
+    plutil -p "$entitlements_file" >&2
+    exit 1
+fi
+
 sign_host() {
     local target="$1"
     # The entitlements file is passed explicitly rather than inherited: codesign
@@ -291,9 +328,10 @@ if [[ "$sign_identity" == "-" ]]; then
 else
     print "Signing with identity: $sign_identity"
 fi
-# Hardened runtime + the one entitlement from scripts/PaneSpace.entitlements.
-# Point codesign straight at the requested keychain instead of editing the
-# user's keychain search list.
+# Hardened runtime + exactly the entitlements in PaneSpaceENTITLEMENTS_KEYS below,
+# which is asserted against scripts/PaneSpace.entitlements. Point codesign
+# straight at the requested keychain instead of editing the user's keychain
+# search list.
 sign_host "$app_dir"
 
 codesign --verify --strict --verbose=2 "$app_dir"
@@ -319,7 +357,9 @@ fi
 # rather than on formatting. What is asserted is "the host carries exactly what
 # this file says", including that nothing else crept in -- a grep for the one
 # key the file happens to hold would pass on a build that also carries a second
-# capability nobody asked for.
+# capability nobody asked for. The file was already pinned against
+# PaneSpaceENTITLEMENTS_KEYS before anything was signed, so this comparison
+# closes the remaining gap: that what ended up signed is what was declared.
 host_entitlements="$(codesign -d --entitlements - --xml "$app_dir" 2>/dev/null \
     | plutil -convert xml1 -o - - 2>/dev/null || true)"
 expected_entitlements="$(plutil -convert xml1 -o - "$entitlements_file")"
