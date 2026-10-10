@@ -36,6 +36,13 @@ jobs:
       - name: Verify application signature
         run: codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
 
+      # `codesign --verify` cannot see a bundle that verifies cleanly and still
+      # dies at launch: hardened runtime without the right entitlement makes dyld
+      # refuse to map Sparkle.framework, and every codesign check passes on it.
+      # The check is a launch. See ADR 0011 §2b and §7b.
+      - name: Launch the packaged bundle
+        run: ./scripts/launch-smoke-test.sh
+
       - name: Upload development bundle
         uses: actions/upload-artifact@v7
         with:

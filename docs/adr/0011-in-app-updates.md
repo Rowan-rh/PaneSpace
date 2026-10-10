@@ -52,7 +52,7 @@ consulted: NERE-21 (spike)
 >      「`disable-library-validation` 不采用」被推翻。推翻的理由是推理链少了一环：
 >      必然失败的是 library validation 这一项，不是 runtime 本身，而那一项可以
 >      单独关掉。新增 §7b 记录配套的启动冒烟测试，以及「验签通过但启动即死」这条
->      实测。
+>      实测，并把该脚本接进 `ci.yml` 与 `release.yml`。
 >
 > 另外 §6 改正了一处自相矛盾的表述（「固定 URL 指向最新 release」），并记下了
 > CR 指出的一处不准确说法（XPC services 并非「自动检测」）。
@@ -579,9 +579,9 @@ signature OK: clean.zip
 §7 里的端到端验证是一次性的、本机手工做的，跑一次就没了。**第四轮把它写成了脚本**：
 `scripts/launch-smoke-test.sh`，任何人对任何一个已打包的 bundle 都能重跑同一组判定。
 把它接进 `ci.yml` 和 `release.yml` 是同一轮的收尾（见 NERE-51 P2-5）。
-
-它存在的原因就是 §2b 表格里那行「验签通过但启动即死」：这种构建不会被任何
-codesign 检查发现。脚本判四件事，每件对应一种失败：
+它存在的原因就是 §2b 表格里那行「验签通过但启动即死」：`ci.yml` 在验签之后
+跑一次这个脚本，`release.yml` 在打包之前同样跑一次（发布出去的就是那个 bundle）。
+这种构建不会被任何 codesign 检查发现，所以脚本判的是四件真正发生过的事：
 
 | 判定 | 失败时的含义 |
 | --- | --- |

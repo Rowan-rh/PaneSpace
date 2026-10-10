@@ -211,6 +211,13 @@ jobs:
           codesign -dvvv dist/PaneSpace.app 2>&1 \
             | grep -E "^(Identifier|Authority|Signature|TeamIdentifier)=" || true
 
+      # Same reason as in ci.yml, and it matters more here: this is the bundle
+      # that gets zipped and published, so a build that verifies but cannot start
+      # would ship. Verifying the signature proves nothing about launchability --
+      # see ADR 0011 §2b (third row of the table) and §7b.
+      - name: Launch the packaged bundle
+        run: ./scripts/launch-smoke-test.sh
+
       - name: Package the archive
         env:
           VERSION: ${{ steps.version.outputs.version }}
