@@ -15,7 +15,9 @@ on:
   # Manual recovery only, and a strict replacement for "Re-run all jobs", which
   # GitHub stops offering 30 days after a run. Nothing triggers this automatically
   # and no new publish path is added: a dispatched run does exactly what the
-  # corresponding event-driven run does, for a tag that already exists.
+  # corresponding event-driven run does, for a tag that already exists, and every
+  # fact it needs is read back from the server rather than from an event payload
+  # it would not have.
   #
   # Two inputs, because the two halves are guarded by mutually exclusive events
   # and must stay that way.
@@ -642,7 +644,8 @@ jobs:
     # A dispatched run carries no `release` payload, so the tag comes from
     # `inputs.tag` instead; every step below reads RELEASE_TAG rather than the
     # payload directly, so there is exactly one place that knows which tag this
-    # run is about.
+    # run is about. The release's flags are not taken from the payload at all --
+    # they are read from the server -- so both triggers behave identically.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.job == 'publish-appcast')
     permissions:
       contents: write
@@ -670,31 +673,46 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Advancing the feed for $version (build $build_number) from tag $TAG"
 
-      - name: Refuse to advance the feed for a draft
+      - name: Read the release's published state from the server
+        id: release_state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ env.RELEASE_TAG }}
           DRAFT: ${{ github.event.release.draft }}
         run: |
           set -euo pipefail
-          # The payload says draft=false, but the server is the authority, and
-          # this is the one check standing between "the feed is public" and
-          # "the feed advertises 404s".
+          # One question, one answer, from the server: what does GitHub currently
+          # say this Release is? Both flags come back in one call, because reading
+          # them from two places is how they end up disagreeing.
           #
-          # A manually dispatched run has no payload at all, so DRAFT is empty and
-          # the first branch below cannot fire. Nothing is lost: the `gh release
-          # view` call that follows asks the server directly, and it is the check
-          # that has to hold either way.
+          # The payload is used as a cheap pre-filter only. A manually dispatched
+          # run carries no `release` payload at all, so DRAFT is empty and this
+          # branch cannot fire there -- which is exactly why the flag that matters
+          # below cannot come from the payload either.
           if [[ "$DRAFT" == "true" ]]; then
             echo "::error::The release event for $TAG says the release is still a draft; the feed stays where it is"
             exit 1
           fi
-          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft --jq .isDraft)"
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease --template '{{.isDraft}} {{.isPrerelease}}')"
+          read -r draft prerelease <<<"$state"
           if [[ "$draft" != "false" ]]; then
             echo "::error::GitHub reports $TAG as isDraft=$draft; the feed stays where it is"
             exit 1
           fi
+          # The prerelease flag used to be read from the event payload. On a
+          # manually dispatched run that payload does not exist, so the flag came
+          # back empty and `verify-appcast` saw a beta tag with no channel --
+          # refusing to publish the one feed this recovery entry exists for --
+          # while for a stable tag the check it was written to perform was simply
+          # skipped, leaving a flag flipped on the draft before publishing
+          # undetected. Reading it here covers both triggers with one path.
+          if [[ "$prerelease" != "true" && "$prerelease" != "false" ]]; then
+            echo "::error::GitHub reported isPrerelease='$prerelease' for $TAG, which is neither true nor false; refusing to guess"
+            exit 1
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "GitHub reports $TAG as published, isPrerelease=$prerelease"
 
       - name: Download the appcast and the commit it was built on
         id: download
@@ -735,13 +753,15 @@ jobs:
         env:
           TAG: ${{ env.RELEASE_TAG }}
           VERSION: ${{ steps.version.outputs.version }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
+          PRERELEASE: ${{ steps.release_state.outputs.prerelease }}
         run: |
           set -euo pipefail
           # The same assertions the build job ran, re-run on the file as it
           # actually arrived: it came over the API, not out of this workflow's
           # own workspace. A prerelease flag changed on the draft before
-          # publishing is caught here rather than by stable users.
+          # publishing is caught here rather than by stable users -- and the
+          # flag it is checked against is the server's, read above, not the one
+          # the triggering event happened to carry.
           python3 scripts/appcast-tool.py verify-appcast \
             dist/appcast.xml "$VERSION" "$PRERELEASE"
 
