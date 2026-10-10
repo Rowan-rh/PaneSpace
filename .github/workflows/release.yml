@@ -287,9 +287,30 @@ jobs:
           cp dist/PaneSpace-"$VERSION"-macos-arm64.zip "$input/"
           cp dist/PaneSpace-"$VERSION"-macos-arm64.zip.sig "$input/"
 
-          # The previous appcast is an input, not a convenience: without it every
-          # historical entry disappears and a user on an older version gets a full
-          # download or nothing.
+          # The previous appcast is an input, not a convenience: without it the
+          # feed would contain this release alone, and a user on an older version
+          # would get no upgrade path at all.
+          #
+          # It does NOT carry every historical entry forward, which is what an
+          # earlier version of this comment claimed. `generate_appcast` defaults to
+          # `--maximum-versions 3` and keeps the three newest versions *per branch*
+          # (generate_appcast/Appcast.swift:145); a non-default channel branch that
+          # the default channel has overtaken is cut down to a single entry
+          # (Appcast.swift:150-165). Measured with the pinned 2.10.0 generator and
+          # five signed archives:
+          #
+          #   5 archives, no previous appcast  -> 3 items, "Moved 2 old update
+          #                                        files to old_updates"
+          #   previous appcast (3 items) + only the new archive, i.e. exactly
+          #   the layout below                      -> 3 items, the oldest of the
+          #                                        three dropped: "Wrote 1 new
+          #                                        update, ... and removed 1 old
+          #                                        update"
+          #
+          # So the oldest entries age out of the feed as releases land. That is the
+          # generator's default, not a PaneSpace decision, and `--maximum-versions 0`
+          # would keep every entry instead -- unbounded feed growth being the reason
+          # the default exists. Changing it is a product decision, not a bug fix.
           #
           # It is read from the `appcast` branch with git rather than from the raw
           # URL the app is pointed at. raw.githubusercontent.com is CDN-cached for
@@ -324,7 +345,7 @@ jobs:
               # previous feed. It is removed, or the first release of the next
               # version would inherit a broken base.
               if git show "FETCH_HEAD:appcast.xml" > "$input/appcast.xml" 2>/dev/null; then
-                echo "Previous appcast read from the $APPCAST_BRANCH branch; history preserved"
+                echo "Previous appcast read from the $APPCAST_BRANCH branch; its entries were carried over (at most 3 per branch, see the note above)"
               else
                 rm -f "$input/appcast.xml"
                 echo "The $APPCAST_BRANCH branch has no appcast.xml yet; generating from scratch"
@@ -367,9 +388,10 @@ jobs:
           #
           # The cost is that no delta is generated: generate_appcast can only
           # build one when both archives are present, and they cannot both be
-          # present without corrupting the old URL. History is still preserved
-          # (the previous appcast carries it), so a user on an older version
-          # gets a correct full download rather than a broken one.
+          # present without corrupting the old URL. Entries the previous appcast
+          # carries are carried over unchanged (subject to the three-per-branch
+          # limit noted above), so a user on an older version gets a correct full
+          # download rather than a broken one.
           #
           # ADR 0011 decision 7 records this trade-off and the measurements
           # behind it. Rowan confirmed it on 2026-10-04; the delta upload below

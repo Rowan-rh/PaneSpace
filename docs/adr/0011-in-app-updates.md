@@ -782,6 +782,22 @@ delta、小版本升级下载量很小。两处都作废。
 不放任何历史归档。** 历史条目由上一版 `appcast.xml` 承载，各版本自己的下载 URL
 和 `edSignature` 逐字保留。
 
+**事实修正（2026-10-10，NERE-51 P3）。** 上一段「历史条目由上一版 appcast.xml 承载」
+字面成立，但读起来像「feed 会无限保留全部历史」，那不是 `generate_appcast` 的默认行为：
+它默认 `--maximum-versions 3`，**每个分支只保留最新 3 个版本**
+（`generate_appcast/Appcast.swift:145`），并且一个已被 default 通道超越的 beta 分支
+只保留 1 条（`Appcast.swift:150-165`）。用固定的 2.10.0 生成器实测：
+
+| 输入 | 生成结果 |
+| --- | --- |
+| 5 个签名归档，无历史 appcast | 3 条（`Moved 2 old update files to old_updates`） |
+| 历史 appcast（3 条）+ 只有本次归档，即本条规则描述的布局 | 3 条，最旧的一条被移除 |
+| 同上，加 `--maximum-versions 0` | 4 条，全部保留 |
+
+本条规则本身不受影响——**被留下的条目依然逐字保留 URL 和签名**，只是更早的条目会随
+发布自然老化出 feed。想保留全部条目可以传 `--maximum-versions 0`，代价是 feed 无界增长，
+这是产品取舍而不是缺陷，因此当前不传。
+
 **为什么不能两者兼得。** `generate_appcast` 在按 feed 分组**之前**就把
 `downloadUrlPrefix` 赋给输入目录里的每一个归档
 （`generate_appcast/Appcast.swift:40-43`）：
