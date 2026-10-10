@@ -85,7 +85,11 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, @preconcurrency
             // banner would keep offering what the user just dismissed. `SUSkippedVersion` is
             // already written by Sparkle at this point; this only mirrors it for the UI.
             guard choice == .skip else { return }
-            model?.mirrorSkippedVersion(updateItem.versionString)
+            // `displayVersionString`, not `versionString`: what the model publishes is rendered in
+            // Settings and compared against the banner's display version. Sparkle has already
+            // written the build number into `SUSkippedVersion` itself; this only mirrors it for
+            // the UI, and the UI wants the version the user recognises.
+            model?.mirrorSkippedVersion(updateItem.displayVersionString)
         }
     }
 

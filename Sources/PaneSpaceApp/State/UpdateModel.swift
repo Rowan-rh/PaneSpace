@@ -90,6 +90,16 @@ final class UpdateModel: ObservableObject {
     /// The outcome of the last check the user asked for; nil until there has been one.
     @Published private(set) var lastManualResult: UpdateCheckResult?
     /// The version the user chose not to hear about again.
+    ///
+    /// This is what the user is shown and what `AvailableUpdate.matchesSkippedVersion` compares, so
+    /// a skip made in this session carries the display version (`0.3.0`), never the build number.
+    ///
+    /// The *stored* skipped version is a separate question and is deliberately not normalised:
+    /// Sparkle compares skips against `versionString` and records that, so
+    /// `SparkleSkippedUpdate.recordSkip` and Sparkle itself keep writing the build number into
+    /// `SUSkippedVersion`. Restoring from that key can therefore only produce the build number,
+    /// because the display string is not on disk anywhere — a pre-existing limit of keeping one
+    /// answer to "what was skipped" in the key Sparkle reads, rather than two.
     @Published private(set) var skippedVersion: String?
     /// Why the last scheduled check failed, so the UI can offer a retry without a modal.
     @Published private(set) var lastAutomaticFailure: UpdateFeedError?
@@ -386,7 +396,11 @@ final class UpdateModel: ObservableObject {
     func skip(version: String) {
         if case .sparkle(let offer) = availableUpdate, offer.displayVersion == version {
             SparkleSkippedUpdate.recordSkip(of: offer, in: defaults)
-            skippedVersion = offer.versionString
+            // The store keeps the build number because that is what Sparkle compares; the published
+            // property keeps the display version because that is what the user is shown and what
+            // `matchesSkippedVersion` compares. Writing the build number into the published value
+            // put "30099" in Settings and made `clearIfShowing` miss the banner it had just hidden.
+            skippedVersion = offer.displayVersion
             availableUpdate = nil
             return
         }
@@ -466,6 +480,10 @@ final class UpdateModel: ObservableObject {
     }
 
     /// Mirrors a skip Sparkle recorded itself, so the banner stops offering it.
+    ///
+    /// `version` is the display version, not Sparkle's `versionString`: this value is shown to the
+    /// user and compared against the banner's display version, and a build number would miss on
+    /// both counts — the banner it just dismissed would stay up.
     func mirrorSkippedVersion(_ version: String?) {
         guard let version else { return }
         skippedVersion = version

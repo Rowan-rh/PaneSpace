@@ -1215,6 +1215,49 @@ final class UpdateModelTests: XCTestCase {
     }
 
     @MainActor
+    func testSkippingASparkleOfferPublishesTheVersionTheUserSees() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+
+        // The build number belongs in the key Sparkle reads, not in the value Settings renders
+        // and `matchesSkippedVersion` compares — "Skipped version: 30099" is not something anyone
+        // recognises as a version.
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+    }
+
+    @MainActor
+    func testMirroringASkipPublishesTheVersionTheUserSees() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        // A skip made in Sparkle's own window reaches the model through the delegate, which used to
+        // hand over `versionString`. Compared against the display version, a build number misses on
+        // both counts: Settings shows it, and `clearIfShowing` cannot match the banner it just hid.
+        model.mirrorSkippedVersion("0.3.0")
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+        XCTAssertNil(model.availableUpdate, "The banner must go when the version on it was skipped.")
+    }
+
+    @MainActor
     func testAFinishedSparkleCycleEndsTheCheckingState() {
         let defaults = makeDefaults()
         let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
