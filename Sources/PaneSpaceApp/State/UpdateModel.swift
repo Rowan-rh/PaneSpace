@@ -433,8 +433,16 @@ final class UpdateModel: ObservableObject {
         do {
             try updater.start()
         } catch {
-            // A bundle Sparkle refuses leaves the stage-2 feed as the working path rather than a
-            // silently dead update button. The log names the reason only.
+            // Nothing falls back to the stage-2 feed here, and the previous version of this comment
+            // said it did. The controller is a stored `let` picked in `init`, so `usesSparkle` is
+            // still true and the stage-2 schedule never starts: a bundle Sparkle refuses leaves an
+            // updater that exists but is not running. That is a dead updater rather than a wrong
+            // one -- nothing downloads or installs -- and the log is the only record of why, which
+            // is why it names the coarse case and nothing else (no URL, no path, no bundle id).
+            //
+            // Making the fallback real would mean making the controller a published `var`, because
+            // `updater` is bound directly by the Settings window and a plain `let` -> `var` change
+            // would leave those bindings showing a controller that is no longer there.
             logger.notice("Sparkle refused to start: \(self.logReason(for: Self.mapSparkleError(error)), privacy: .public)")
         }
     }
