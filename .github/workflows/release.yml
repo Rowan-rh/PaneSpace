@@ -298,9 +298,18 @@ jobs:
           remote="https://github.com/$REPO.git"
           branch_state=0
           git ls-remote --exit-code --heads "$remote" "$APPCAST_BRANCH" >/dev/null 2>&1 || branch_state=$?
+          # The commit this feed is built on. The feed is generated here but
+          # committed days later, by another workflow run, from this snapshot:
+          # if the branch moved in between, committing the snapshot would drop
+          # whatever landed in between. The SHA travels to that job as a
+          # release asset so it can tell "still based on the same commit" from
+          # "too old to publish". `none` means there was no branch to be based
+          # on, which is the first release and cannot go stale.
+          appcast_base=none
           case "$branch_state" in
             0)
               git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+              appcast_base="$(git rev-parse FETCH_HEAD)"
               # The shell creates the redirect target before git runs, so a
               # failed `git show` leaves an empty appcast.xml behind --
               # and generate_appcast would then read that empty file as the
@@ -322,6 +331,12 @@ jobs:
               exit 1
               ;;
           esac
+
+          # Written before the generator runs, so a release that produced a
+          # feed without also producing its base is rejected by the asset
+          # assertion below rather than shipped half-describable.
+          printf '%s\n' "$appcast_base" > dist/appcast-base.txt
+          echo "This appcast is based on $APPCAST_BRANCH commit '$appcast_base'"
 
           # The private key goes in on stdin and never in argv, matching the
           # convention the release signing step already uses.
@@ -384,7 +399,8 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for asset in dist/appcast.xml dist/PaneSpace-*-macos-arm64.zip \
+          for asset in dist/appcast.xml dist/appcast-base.txt \
+                       dist/PaneSpace-*-macos-arm64.zip \
                        dist/PaneSpace-*-macos-arm64.zip.sha256 \
                        dist/PaneSpace-*-macos-arm64.zip.sig; do
             # shellcheck disable=SC2086  # glob is intentional; quoting it would test a literal name
@@ -422,6 +438,7 @@ jobs:
             dist/PaneSpace-*-macos-arm64.zip.sha256
             dist/PaneSpace-*-macos-arm64.zip.sig
             dist/appcast.xml
+            dist/appcast-base.txt
           if-no-files-found: error
           retention-days: 1
 
@@ -477,7 +494,7 @@ jobs:
           # run's artifact. The Release is the one object both runs can see, and
           # the file it carries is exactly the feed the build job signed.
           assets=("dist/$archive" "dist/$archive.sha256" "dist/$archive.sig" \
-            "dist/appcast.xml")
+            "dist/appcast.xml" "dist/appcast-base.txt")
           # Deltas ride along when the build produced any. The appcast already
           # references them, so a release that shipped the feed without them
           # would hand every client a download URL that 404s.
@@ -584,16 +601,20 @@ jobs:
             exit 1
           fi
 
-      - name: Download the appcast from the published release
+      - name: Download the appcast and the commit it was built on
+        id: download
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           mkdir -p dist
+          # appcast* is appcast.xml plus appcast-base.txt, the two files the
+          # publish job put on the Release. `gh release download` takes one
+          # pattern, and matching them together is cheaper than two calls.
           if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern appcast.xml --dir dist; then
-            echo "::error::$TAG carries no appcast.xml asset, so this Release was not built by release.yml"
+            --pattern 'appcast*' --dir dist; then
+            echo "::error::$TAG carries no appcast assets, so this Release was not built by release.yml"
             echo "::error::The feed stays where it is rather than advertising a release it cannot vouch for."
             exit 1
           fi
@@ -601,6 +622,19 @@ jobs:
             echo "::error::$TAG carries an empty appcast.xml; refusing to publish it"
             exit 1
           fi
+          if [[ ! -s dist/appcast-base.txt ]]; then
+            echo "::error::$TAG carries no appcast-base.txt, so the feed cannot be checked against the branch it was built on"
+            echo "::error::Re-run this tag's build in Actions to regenerate both assets, then re-run this job."
+            exit 1
+          fi
+          base="$(tr -d '[:space:]' < dist/appcast-base.txt)"
+          if [[ "$base" != "none" && ! "$base" =~ ^[0-9a-f]{40}$ \
+            && ! "$base" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::appcast-base.txt holds '$base', which is neither 'none' nor a commit SHA"
+            exit 1
+          fi
+          echo "appcast-base=$base" >> "$GITHUB_OUTPUT"
+          echo "This appcast was built on '$base'"
 
       - name: Assert the downloaded feed is this release's feed
         env:
@@ -653,12 +687,14 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
           VERSION: ${{ steps.version.outputs.version }}
           APPCAST_BRANCH: appcast
+          BASE: ${{ steps.download.outputs.appcast-base }}
         run: |
           set -euo pipefail
           # Reached only after every assertion above passed: the Release is
-          # public and every download it advertises answers 200. That is what
-          # makes committing the feed safe -- and it is why this step lives in
-          # the published event rather than in the tag push.
+          # public, every download it advertises answers 200, and the feed was
+          # built on the branch's current head. That last one is what makes
+          # committing the snapshot safe -- and it is why this step lives in the
+          # published event rather than in the tag push.
           remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
 
           # The `appcast` branch is an orphan: the feed has no shared history
@@ -684,6 +720,23 @@ jobs:
           case "$branch_state" in
             0)
               git fetch --depth 1 "$remote" "$APPCAST_BRANCH"
+              # This snapshot was generated on top of one specific commit of
+              # this branch. If the branch has moved since -- and with the
+              # release sitting as a draft for a day, it very well has -- then
+              # committing the snapshot would drop every entry added in
+              # between, which is how a published 0.2.1 vanishes from the feed
+              # because a beta tagged earlier was released later.
+              #
+              # The fast-forward push below only covers the seconds between this
+              # fetch and that push. It cannot tell that the snapshot was taken
+              # hours ago; only this comparison can.
+              current="$(git rev-parse FETCH_HEAD)"
+              if [[ "$current" != "$BASE" ]]; then
+                echo "::error::$APPCAST_BRANCH is now at $current, but this appcast was built on '$BASE'."
+                echo "::error::Publishing it would delete every entry added in between."
+                echo "::error::Re-run this tag's build in Actions -- it regenerates the appcast on top of the current head -- then re-run this job."
+                exit 1
+              fi
               # The new commit's parent is the commit just fetched, so the push
               # below is a fast-forward and needs no --force. That is also the
               # safety property: if anything else wrote to this branch since
@@ -691,6 +744,11 @@ jobs:
               git checkout -B "$APPCAST_BRANCH" FETCH_HEAD
               ;;
             2)
+              if [[ "$BASE" != "none" ]]; then
+                echo "::error::The $APPCAST_BRANCH branch does not exist, but this appcast was built on '$BASE'."
+                echo "::error::Re-run this tag's build in Actions, then re-run this job."
+                exit 1
+              fi
               git checkout --orphan "$APPCAST_BRANCH"
               # Everything checked out from the tag has to leave the index, or
               # the feed branch would carry the whole source tree.
