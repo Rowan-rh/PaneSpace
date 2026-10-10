@@ -21,9 +21,20 @@
 #      it maps anything
 #
 # (4) is checked with a real injected library rather than by reading the
-# entitlements, and the same probe is first injected into a tiny unsigned
+# entitlements, and the same probe is first injected into a tiny non-hardened
 # executable as a positive control. A negative result only means something
-# if the probe is known to work.
+# if the probe is known to work. Both controls run dyld-injection-target.c,
+# which has no constructor of its own, so the marker can only come from a
+# real injection -- see the note at the top of that file.
+#
+# (4) also has a negative control: the same target signed with hardened
+# runtime and the host's own entitlements, which is the host's configuration
+# minus the bundle. If the probe gets in there, this machine is not enforcing
+# the DYLD restriction and the host tells us nothing -- on a hosted runner
+# that has happened, where the product was fine and the runner simply does not
+# strip DYLD_* from hardened processes. That case is reported as skipped, with
+# the reason, rather than failed or, worse, quietly dropped. The other four
+# checks stay hard.
 #
 # The binary is launched directly rather than through `open`, so the
 # captured output belongs to this process and its exit status is the app's
@@ -71,28 +82,73 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
-# The load-time probe, plus the positive control that proves it works.
+# The load-time probe, plus the two controls that give it meaning.
 # ---------------------------------------------------------------------------
 
 probe_dylib="$workdir/probe.dylib"
-probe_control="$workdir/probe-control"
 # `xcrun --sdk macosx` rather than a bare `clang`: the latter picks up whatever
 # SDK `xcode-select` happens to point at, which on a machine with the Command
 # Line Tools installed alongside Xcode is a different (and often mismatched) SDK.
 xcrun --sdk macosx clang -dynamiclib -o "$probe_dylib" \
     "$project_dir/scripts/dyld-injection-probe.c"
-xcrun --sdk macosx clang -o "$probe_control" \
-    "$project_dir/scripts/dyld-injection-probe.c"
 
-control_marker="$workdir/control.marker"
-PANESPACE_INJECTION_MARKER="$control_marker" \
-DYLD_INSERT_LIBRARIES="$probe_dylib" \
-    "$probe_control"
-if [[ ! -f "$control_marker" ]]; then
-    fail "the injection probe did not run in an unsigned process" \
+# Same source for both controls; only the signature differs. See
+# scripts/dyld-injection-target.c for why this cannot be the probe source.
+#
+# The negative control is signed with hardened runtime AND the host's own
+# entitlement file, which is deliberate. Signing it with `-o runtime` and no
+# entitlements at all looks more minimal but measures the wrong thing: hardened
+# runtime turns on library validation by default, so an unsigned probe dylib is
+# refused on that basis alone and the control is refused whether or not this
+# machine strips DYLD_*. On a runner that does not enforce the DYLD
+# restriction the control would then still read as "refused", the smoke test
+# would take that as a hardening failure, and it would fail a perfectly good
+# build -- turning the one case the control exists to catch into a false alarm.
+#
+# Carrying the host's entitlements removes that confound:
+# disable-library-validation is exactly what lets the host load the probe if
+# DYLD_* ever did reach it, so from here on the only gate left is the DYLD
+# strip itself. The file is read from the build rather than inlined, so the
+# control follows the host's configuration if that file ever changes.
+control_target="$workdir/probe-control"
+runtime_target="$workdir/probe-runtime-control"
+xcrun --sdk macosx clang -o "$control_target" \
+    "$project_dir/scripts/dyld-injection-target.c"
+cp "$control_target" "$runtime_target"
+if ! codesign --force --options runtime \
+    --entitlements "$project_dir/scripts/PaneSpace.entitlements" \
+    --sign - "$runtime_target" 2>/dev/null; then
+    fail "could not sign the negative control with hardened runtime" \
+        "without it the control cannot say whether this machine enforces the restriction"
+fi
+
+run_control() {
+    local target="$1" marker="$2"
+    rm -f "$marker"
+    PANESPACE_INJECTION_MARKER="$marker" \
+    DYLD_INSERT_LIBRARIES="$probe_dylib" \
+        "$target" > /dev/null 2>&1
+    [[ -f "$marker" ]]
+}
+
+# Positive control: no hardened runtime, so the injection must land. If this
+# fails the probe is broken and the host result below would prove nothing.
+if ! run_control "$control_target" "$workdir/control.marker"; then
+    fail "the injection probe did not run in a non-hardened process" \
         "DYLD_INSERT_LIBRARIES is ignored here, so a negative result from the app below would prove nothing"
 fi
-print "Positive control: DYLD_INSERT_LIBRARIES works on an unsigned process"
+print "Positive control: DYLD_INSERT_LIBRARIES works on a non-hardened process"
+
+# Negative control: identical code, hardened runtime, no entitlements. On a
+# machine that enforces the restriction this must be refused, and that is what
+# makes the host's refusal a statement about the host.
+if run_control "$runtime_target" "$workdir/runtime.marker"; then
+    runtime_enforced=false
+    print "Negative control: hardened runtime WITH the host's entitlements WAS injected"
+else
+    runtime_enforced=true
+    print "Negative control: injection refused by hardened runtime, as expected"
+fi
 
 # ---------------------------------------------------------------------------
 # Launch the packaged bundle and watch what happens to it.
@@ -165,10 +221,26 @@ if ! kill -0 "$app_pid" 2>/dev/null; then
 fi
 
 if [[ -f "$injected_marker" ]]; then
-    fail "DYLD_INSERT_LIBRARIES was honoured" \
-        "the host carries allow-dyld-environment-variables, or hardened runtime is not actually on it"
+    if [[ "$runtime_enforced" == "true" ]]; then
+        fail "DYLD_INSERT_LIBRARIES was honoured" \
+            "the host carries allow-dyld-environment-variables, or hardened runtime is not actually on it" \
+            "a binary with hardened runtime and the same entitlements refused the same injection on this machine"
+    fi
+    # The control says this machine does not strip DYLD_* from hardened
+    # processes, so the host's result is not evidence about the host. That is a
+    # property of the runner, not of the bundle, and failing here would report a
+    # packaging defect that does not exist. The build-app.sh assertions still
+    # refuse to produce a bundle without the runtime flag or with the allow-dyld
+    # entitlement, so this is the only check that goes soft, and only on a host
+    # that has already shown it does not enforce the rule.
+    print "skipped: this machine does not enforce hardened-runtime DYLD restrictions"
+    print "         the negative control -- hardened runtime, the same entitlements"
+    print "         as this host -- accepted the same injection, so this host's"
+    print "         result says nothing about PaneSpace. build-app.sh still asserts"
+    print "         the runtime flag and refuses allow-dyld-environment-variables."
+else
+    print "DYLD_INSERT_LIBRARIES is ignored"
 fi
-print "DYLD_INSERT_LIBRARIES is ignored"
 
 kill "$app_pid" 2>/dev/null || true
 wait "$app_pid" 2>/dev/null || true
