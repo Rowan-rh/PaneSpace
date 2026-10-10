@@ -226,6 +226,30 @@ final class UpdateModelTests: XCTestCase {
         UpdateModel(feed: feed, clock: clock, defaults: defaults, currentVersion: currentVersion)
     }
 
+    /// A model that has an updater, which is what decides which key the skipped version is read
+    /// from. Without this the test runner is not an app bundle, so `canUseSparkle` is false and
+    /// every model here is on the fallback channel no matter which keys the test sets.
+    @MainActor
+    private func makeSparkleModel(
+        feed: StubUpdateFeed,
+        clock: StubUpdateClock = StubUpdateClock(),
+        defaults: UserDefaults,
+        currentVersion: SemanticVersion? = SemanticVersion(string: "0.1.0")
+    ) -> UpdateModel {
+        let delegate = SparkleUpdateDelegate()
+        return UpdateModel(
+            feed: feed,
+            clock: clock,
+            defaults: defaults,
+            currentVersion: currentVersion,
+            updaterController: SPUStandardUpdaterController(
+                startingUpdater: false,
+                updaterDelegate: delegate,
+                userDriverDelegate: delegate
+            )
+        )
+    }
+
     /// Waits for an asynchronous condition instead of guessing a fixed delay.
     @MainActor
     private func waitUntil(
@@ -745,6 +769,10 @@ final class UpdateModelTests: XCTestCase {
         // channel is asked once, not how quickly; "once" is checked by the settled count, and a
         // fourth request would still fail this after the wait.
         await waitUntil { await feed.requestCount >= 3 }
+        // Let anything still in flight land before counting. `waitUntil` returns the moment it first
+        // sees 3, so a duplicate request arriving a few milliseconds later would go unnoticed; the
+        // old direct read had the same blind spot, and this is what closes it.
+        await settle()
         let requests = await feed.requestCount
         XCTAssertEqual(requests, 3, "The new channel is asked once, for everyone.")
 
@@ -1530,9 +1558,11 @@ final class UpdateModelTests: XCTestCase {
     func testTheSkippedVersionIsReadFromSparklesKeyToo() {
         let defaults = makeDefaults()
         // Sparkle writes the skip itself, into its own key. The model has to notice that, or a skip
-        // made in Sparkle's window would leave the banner up.
+        // made in Sparkle's window would leave the banner up. It needs an updater: a build with no
+        // updater compares display versions, not Sparkle's build numbers, so ignoring that key is
+        // correct there rather than a miss.
         defaults.set("30099", forKey: "SUSkippedVersion")
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
 
         XCTAssertEqual(model.skippedVersion, "30099")
     }
@@ -1541,15 +1571,39 @@ final class UpdateModelTests: XCTestCase {
     ///
     /// Both keys are set when someone skipped on a build with no updater and later moved to one
     /// with Sparkle. Only Sparkle's records the skip they would recognise; the other is history.
+    ///
+    /// The model has an updater on purpose: which key a skip is read from depends on the channel
+    /// the model is actually on, and a test runner is never on the Sparkle one by accident.
     @MainActor
     func testALeftoverFallbackKeyDoesNotShadowTheSkipSparkleRecorded() {
         let defaults = makeDefaults()
         defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
         defaults.set("30099", forKey: "SUSkippedVersion")
 
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
 
         XCTAssertEqual(model.skippedVersion, "30099")
+    }
+
+    /// The mirror image: a leftover Sparkle key must not cost a build with no updater its own skip.
+    ///
+    /// The fallback channel compares display versions and Sparkle compares build numbers, so
+    /// neither engine can honour the other channel's key. Reading across lost the skip on the next
+    /// launch and put the same version back on the banner.
+    @MainActor
+    func testAFallbackSkipSurvivesALeftoverSparkleKey() {
+        let defaults = makeDefaults()
+        // Left by a build that did have an updater; this one has none.
+        defaults.set("30099", forKey: "SUSkippedVersion")
+
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertFalse(model.usesSparkle, "This is the channel under test.")
+        model.skip(version: "0.4.0")
+        XCTAssertEqual(model.skippedVersion, "0.4.0")
+
+        // A second model over the same store is the next launch.
+        let relaunched = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(relaunched.skippedVersion, "0.4.0")
     }
 
     /// The same leftover key must not undo a skip made afterwards either.
