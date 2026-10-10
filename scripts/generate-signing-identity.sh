@@ -71,8 +71,15 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days "$days" -nodes \
 
 # Validate the produced certificate before handing it over, so a missing
 # extension is caught here instead of at codesign time in CI.
-if ! openssl x509 -in "$tmp_dir/cert.pem" -noout -text \
-    | grep -q "Code Signing"; then
+#
+# The output is read into a variable before it is matched, for the reason given in
+# f4847d0 for build-app.sh: under `set -o pipefail`, `openssl ... | grep -q` is a
+# coin flip, because grep exits on the first match and the tool still writing gets
+# SIGPIPE, which pipefail reports as a failed pipeline. It does not bite at this
+# size -- the text of one certificate is ~3 KB and fits in the pipe buffer -- but
+# the check would then pass or fail for reasons unrelated to the certificate.
+certificate_text="$(openssl x509 -in "$tmp_dir/cert.pem" -noout -text 2>/dev/null)"
+if [[ "$certificate_text" != *"Code Signing"* ]]; then
     die "generated certificate is missing extendedKeyUsage=codeSigning"
 fi
 

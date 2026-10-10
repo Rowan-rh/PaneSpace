@@ -260,8 +260,16 @@ jobs:
             echo "::error::Could not read the certificate SHA-1 fingerprint; the .p12 may not be the expected certificate"
             exit 1
           fi
-          if ! security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" \
-            2>/dev/null | grep -qF "$identity_hash"; then
+          # Read into a variable before matching, for the reason given in f4847d0
+          # for build-app.sh: under `set -o pipefail`, `security ... | grep -qF`
+          # is a coin flip -- grep exits on the first match, `security` is still
+          # writing and dies on SIGPIPE, and pipefail calls the whole pipeline
+          # failed. CI's temporary keychain holds one certificate, whose listing
+          # fits in the pipe buffer, so it does not bite there today; measured on
+          # a probe keychain holding 70 certificates (84 KB of listing) the old
+          # form reported "certificate missing" on 300 runs out of 300.
+          keychain_certificates="$(security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" 2>/dev/null)"
+          if [[ "$keychain_certificates" != *"$identity_hash"* ]]; then
             echo "::error::The imported certificate is not present in the temporary keychain"
             exit 1
           fi
