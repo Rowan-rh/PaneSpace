@@ -257,10 +257,11 @@ runtime 的其余部分照常生效：
 
 **最后一行写“保持开启”写得过满，必须说清楚它到底拦住了什么。**
 `disable-library-validation` 关掉的不是“签名有效”这项检查，而是“被加载的库必须与进程
-同 Team ID 或由 Apple 签名”这一项。于是进程仍然要求每个 dylib 有合法签名，但**签名是
-ad-hoc 的库现在也能被加载**——而 Sparkle 及其嵌套产物正是 ad-hoc 签名，关掉这项检查
-换来的是“不校验来源”，不是“可以加载任意文件”。所以它拦的是被篡改或无效签名的库，
-不拦从磁盘任何位置拿来的、签名有效的库。
+同 Team ID 或由 Apple 签名”这一项。于是进程仍然要求每个 dylib 有合法签名，但**没有
+Team ID 的库现在也能被加载**——而 Sparkle 及其嵌套产物在没有 Team ID 这件事上和宿主
+一样：本地 `make app` 是 ad-hoc 签名，release 构建是自签名证书，两者都不带 Team ID。
+关掉这项检查换来的是“不校验来源”，不是“可以加载任意文件”。所以它拦的是被篡改或
+无效签名的库，不拦从磁盘任何位置拿来的、签名有效的库。
 
 真正起缓解作用的是 rpath 只指向 bundle 内部。宿主二进制实测只有两条 rpath
 （`@loader_path` 和 `@executable_path/../Frameworks`），且除 Sparkle 外所有 load command
@@ -788,7 +789,7 @@ PaneSpace 不做公证，宿主和 Sparkle.framework 没有共同 Team ID，
 `com.apple.security.cs.disable-library-validation` 是让 library validation 能通过
 （准确说是被跳过）的最小授权。带上它之后 runtime 的其余部分照常生效：注入、
 JIT、匿名可执行内存仍然一律拒绝，实测见 §2b 与 §7b。“拒绝未签名代码”这项的准确
-含义见 §2b：它拦的是无效或被篡改的签名，不是 ad-hoc 签名的库，路径上的把关由
+含义见 §2b：它拦的是无效或被篡改的签名，不是没有 Team ID 的库，路径上的把关由
 rpath 只指向 bundle 内部来完成。
 
 脚本对这个组合做双向断言：宿主必须有 runtime 标志，且 entitlements 必须与写死在
