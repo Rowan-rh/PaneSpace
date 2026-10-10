@@ -1246,7 +1246,7 @@ final class UpdateModelTests: XCTestCase {
     @MainActor
     func testSkippingASparkleOfferWritesTheKeySparkleReads() {
         let defaults = makeDefaults()
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
         let offer = SparkleUpdateOffer(
             displayVersion: "0.3.0",
             versionString: "30099",
@@ -1266,7 +1266,7 @@ final class UpdateModelTests: XCTestCase {
     @MainActor
     func testSkippingASparkleOfferPublishesTheVersionTheUserSees() async {
         let defaults = makeDefaults()
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
         model.presentSparkleOffer(
             SparkleUpdateOffer(
                 displayVersion: "0.3.0",
@@ -1292,7 +1292,7 @@ final class UpdateModelTests: XCTestCase {
     @MainActor
     func testMirroringASkipPublishesTheVersionTheUserSees() async {
         let defaults = makeDefaults()
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
         model.presentSparkleOffer(
             SparkleUpdateOffer(
                 displayVersion: "0.3.0",
@@ -1615,7 +1615,7 @@ final class UpdateModelTests: XCTestCase {
     func testSkippingWithALeftoverFallbackKeySurvivesTheObserver() async {
         let defaults = makeDefaults()
         defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
         model.presentSparkleOffer(
             SparkleUpdateOffer(
                 displayVersion: "0.3.0",
