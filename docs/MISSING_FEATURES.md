@@ -61,7 +61,7 @@
 - [ ] **安全作用域书签**：为沙盒分发持久保存用户授权的位置访问。当前文件访问依赖 macOS 授予运行中进程的权限，详见[README](../README.md)。
 - [ ] **正式发行签名与公证**：使用 Developer ID 签名并完成 Apple 公证。
 - [x] **应用内更新**：集成 Sparkle，app 内提供更新横幅、“PaneSpace > 检查更新…”菜单入口和设置页更新区；更新源强制 https，feed 与安装包用 Ed25519 签名校验，见 [ADR 0011](adr/0011-in-app-updates.md)。
-- [x] **自动发布和更新元数据**：`.github/workflows/release.yml` 由 tag 触发，完成测试、签名构建、打包、EdDSA 签名与校验，并把签名的 appcast 发布到 `appcast` 分支；appcast 只在 Release 公开之后写入，且会先校验该 Release 的下载地址可匿名访问。流程见[发布流程](RELEASING.md)。
+- [~] **自动发布和更新元数据**：`.github/workflows/release.yml` 由 tag 触发，完成测试、签名构建、打包、EdDSA 签名与校验，并把签名的 appcast 发布到 `appcast` 分支；appcast 只在 Release 公开之后写入，且会先校验该 Release 的下载地址可匿名访问。流程见[发布流程](RELEASING.md)。
   尚待完成：还没有跑过一次真实发布，`scripts/update-public-ed25519.txt` 仍是占位符，第一次打 tag 前必须换成真实公钥。
 
 ## 稳定性与项目维护

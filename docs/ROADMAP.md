@@ -67,7 +67,7 @@ On hold until 0.2 and 0.3 are complete.
 ## 1.0 — Stable release
 
 - [ ] Signed and notarized distribution
-- [x] Automated releases and update metadata (the feed is committed only once the Release is public)
+- [~] Automated releases and update metadata — implemented end to end (tag-triggered release workflow, signed appcast committed only once the Release is public), but no real release has run yet and `scripts/update-public-ed25519.txt` is still a placeholder that must hold the real public key before the first tag
 - [ ] Migration policy for persisted workspaces
 - [ ] Performance and data-integrity test suites
 - [ ] Contributor governance and security response process
