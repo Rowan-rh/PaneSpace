@@ -737,6 +737,14 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertEqual(manualResult, .failed(.cancelled), "The caller is told its check was replaced.")
         XCTAssertNil(model.lastManualResult, "A cancelled manual check publishes nothing.")
 
+        // Waited for, not read. The recheck is a separate Task that restateSchedule() created on the
+        // MainActor when the channel switched; nothing in the two awaits above guarantees it has run
+        // by the time the manual caller resumes, and both are competing for the same actor. Reading
+        // the count directly therefore raced that Task -- it saw 2 and failed roughly one run in
+        // thirty on this machine, under no code change at all. What is under test is that the new
+        // channel is asked once, not how quickly; "once" is checked by the settled count, and a
+        // fourth request would still fail this after the wait.
+        await waitUntil { await feed.requestCount >= 3 }
         let requests = await feed.requestCount
         XCTAssertEqual(requests, 3, "The new channel is asked once, for everyone.")
 
