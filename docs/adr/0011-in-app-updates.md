@@ -4,7 +4,10 @@ date: 2026-10-03
 revised: 2026-10-04（第二轮，按 PaneSpace-TL 复审评论 01a10453-9c4a：补 hardened runtime
   与 library validation 一节，改为 accepted，附启动验证与重跑的端到端证据；
   第三轮，按 NERE-23 的 Rowan 确认 01a1072b-9303：放弃 delta 增量更新包，
-  见「决定 3」与「决定 7」）
+  见「决定 3」与「决定 7」；
+  第四轮，2026-10-10（NERE-51 P2-2：宿主改为带 hardened runtime 与
+  com.apple.security.cs.disable-library-validation，新增 §7b 启动冒烟测试，
+  见 §2b 与「决定 5」）
 accepted: Rowan 2026-10-03 批准引入 Sparkle
 amended: Rowan 2026-10-04 确认暂不提供 delta 增量更新（见决定 7）
 deciders: PaneSpace-TL, Rowan
@@ -44,6 +47,12 @@ consulted: NERE-21 (spike)
 >      输入目录」这个前提上，而该前提经实测不成立——见决定 7。
 >   2. **§8 体积一节**删去「小版本升级的下载量会很小」的说法，改为记录完整包
 >      的实测体积。
+> - **第四轮**（2026-10-10，NERE-51 P2-2，按 CR 实测复测结论）：
+>   1. **§2b 与决定 5 反转**——第二轮的「宿主不带 hardened runtime」和
+>      「`disable-library-validation` 不采用」被推翻。推翻的理由是推理链少了一环：
+>      必然失败的是 library validation 这一项，不是 runtime 本身，而那一项可以
+>      单独关掉。新增 §7b 记录配套的启动冒烟测试，以及「验签通过但启动即死」这条
+>      实测。
 >
 > 另外 §6 改正了一处自相矛盾的表述（「固定 URL 指向最新 release」），并记下了
 > CR 指出的一处不准确说法（XPC services 并非「自动检测」）。
@@ -149,8 +158,9 @@ Sparkle 上游发布这四个产物时的状态（从 SPM 预编译产物直接�
   `com.apple.application-identifier`。这个 entitlement 让 `Autoupdate` 拥有自己的
   XPC 身份（`org.panespace.app-spki`），installer 正是靠它与 App 通信；丢了它
   端到端替换会静默失败。
-- `-o runtime`——保住上游的 hardened runtime 标志。**注意：这一条只适用于嵌套
-  产物，不适用于宿主**；宿主必须不带 runtime，原因见 §2b。
+- `-o runtime`——保住上游的 hardened runtime 标志。**宿主也带 runtime，但额外挂
+  `com.apple.security.cs.disable-library-validation`（见 §2b）**；嵌套产物则不需要，
+  它们不加载 `Sparkle.framework`。
 
 修完之后四个产物的状态（`dist/PaneSpace.app` 实测，2026-10-04，
 证书 SHA-1 `DBF0DC56…1F64E`）：
@@ -195,11 +205,13 @@ entitlements 逐字节保留（与上游产物做 SHA 对比，四个全部 `sam
 ad-hoc 形式（`… or cdhash H"…" or cdhash H"…"`）。这一点对 release 也有意义：将来换
 Developer ID 时，无论 codesign 给出哪种措辞，守卫都成立。
 
-### 2b. hardened runtime 与 library validation（宿主必须不带 runtime）
+### 2b. hardened runtime 与 library validation（宿主带 runtime + disable-library-validation）
 
-这一节是第二版才补上的，**它推翻的是本文档第一版的一句话**：§2 原来写 `-o runtime`
-让嵌套产物「与上游和宿主 .app 一致」。事实上**宿主不能带 hardened runtime**，
-加上之后应用启动即崩溃。
+**第四轮修订（2026-10-10，NERE-51 P2-2）。** 本节此前（第二轮）的结论是「宿主不带
+hardened runtime」，并明确否定了 `disable-library-validation`。**那个结论只对了一半：
+否定的理由（library validation 在没有 Team ID 时必然失败）是实测事实，但由此推出
+「因此不用 runtime」是错的——runtime 和 library validation 是可以分开的两件事。**
+本节按 CR 复测重新记录。
 
 hardened runtime 默认开启 library validation，要求被加载的库与进程有相同 Team ID，
 或由 Apple 签名。自签名证书和 ad-hoc 签名都不带 Team ID，这项校验必然不通过：
@@ -212,32 +224,50 @@ dyld: Library not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle
   Team IDs
 ```
 
-实测（临时证书 SHA-1 `DBF0DC56…1F64E`，2026-10-04）：
+实测（第三轮：临时证书 SHA-1 `DBF0DC56…1F64E`，2026-10-04；第四轮：ad-hoc，
+2026-10-10，均由 `scripts/launch-smoke-test.sh` 判定）：
 
-| 构建 | 宿主 flags | `codesign --verify --deep --strict` | 启动结果 |
-| --- | --- | --- | --- |
-| ad-hoc，无 runtime | `0x2(adhoc)` | 通过 | 存活 ≥12s，Sparkle 已加载 |
-| 临时证书，无 runtime | `0x0(none)` | 通过 | 存活 ≥12s，Sparkle 已加载 |
-| ad-hoc，宿主加 `-o runtime` | `0x10002(adhoc,runtime)` | **仍然通过** | 立即退出（exit 134），dyld 拒绝加载 Sparkle |
+| 构建 | 宿主 flags | 宿主 entitlements | `codesign --verify --deep --strict` | 启动结果 |
+| --- | --- | --- | --- | --- |
+| ad-hoc，无 runtime | `0x2(adhoc)` | 空 | 通过 | 存活 ≥12s，Sparkle 已加载 |
+| 临时证书，无 runtime | `0x0(none)` | 空 | 通过 | 存活 ≥12s，Sparkle 已加载 |
+| ad-hoc，`-o runtime`，无 entitlement | `0x10002(adhoc,runtime)` | 空 | **仍然通过** | 立即退出（exit 134），dyld 拒绝加载 Sparkle |
+| ad-hoc，`-o runtime` + `disable-library-validation` | `0x10002(adhoc,runtime)` | 仅 `com.apple.security.cs.disable-library-validation` | 通过 | 存活 ≥10s，Sparkle 已加载，`DYLD_INSERT_LIBRARIES` 被忽略 |
 
 **第三行是这个坑最要命的地方：签名是有效的，所有 codesign 检查都过，dyld 仍然拒绝加载。**
-「验签通过」证明不了「能启动」，只验签的检查会把这个构建当成正确的。所以脚本现在
-在验签之后额外断言宿主没有 runtime 标志，命中就 `exit 1`：
+「验签通过」证明不了「能启动」，只验签的检查会把这个构建当成正确的。第四轮把这条
+写进了 CI：打包之后真的把应用启动一次，而不是只验签（见 §7b）。
 
-```zsh
-if codesign -dvv "$app_dir" 2>&1 | grep -q 'flags=.*runtime'; then
-    print -u2 "error: host bundle must not be signed with hardened runtime"
-    exit 1
-fi
-```
+**决定：宿主带 `-o runtime`，并带唯一一个 entitlement
+`com.apple.security.cs.disable-library-validation`（`scripts/PaneSpace.entitlements`）。**
+ad-hoc 和证书签名两条路径一致。
 
-**决定：宿主不加 hardened runtime，ad-hoc 和证书签名两条路径都不加。**
-PaneSpace 不做公证，hardened runtime 换不到任何东西，却让应用无法启动。
+**为什么第二轮否掉它、第四轮又加回来。** 第二轮的论据是「不做公证，runtime 换不到
+任何东西」，这句话本身没有变；变的是它没有穷举 runtime 的其他内容。runtime 是多项
+独立检查的总开关，其中只有 library validation 这一项在自签名/ad-hoc 下必然失败，
+而它正是可以用一个 entitlement 单独关掉的那一项。加上这个 entitlement 之后，
+runtime 的其余部分照常生效：
 
-**`disable-library-validation` 不采用。** 它保留 runtime 标志，但把这里唯一起作用的那项
-保护关掉——等于用同样的取舍绕一层，收益为零、可读性更差。
+| runtime 下的检查 | 关掉后 | 是否需要为 PaneSpace 关掉 |
+| --- | --- | --- |
+| library validation | `cs.disable-library-validation` | **需要**（无 Team ID） |
+| 拒绝 `DYLD_INSERT_LIBRARIES` 等注入 | 否 | 不需要，保持开启 |
+| 拒绝 JIT / 匿名可执行内存 | 否 | 不需要，保持开启 |
+| 拒绝未签名代码 | 否 | 不需要，保持开启 |
 
-**嵌套产物保留上游的 `-o runtime`**，依据是实测它们的链接依赖：
+实测确认注入确实被拒绝：第四行里 `DYLD_INSERT_LIBRARIES` 指向一个真的会被加载的
+dylib，宿主正常启动 5 秒且该 dylib 的构造函数从未执行（同一个探针注入一个未签名
+进程时正常执行，见 `scripts/launch-smoke-test.sh` 的正向对照）。
+
+**entitlements 严格只有这一项。** 脚本不只断言 runtime 标志在，而是把签名里的
+entitlements blob 取出来，和 `scripts/PaneSpace.entitlements` 规范化后逐字比对
+（`plutil -convert xml1`），不一致就 `exit 1`。逐字比对而不是 grep 那一个 key，
+是因为多出来的第二项就是多出来的一项能力，而那不该由构建脚本悄悄决定。
+因此该文件里**不能写注释**——codesign 的 plist 解析器不接受 XML 注释，
+所以说明文字都在 `build-app.sh` 里。
+
+**嵌套产物保留上游的 `-o runtime`，entitlements 用
+`--preserve-metadata=entitlements` 原样保留**（见 §2），依据是实测它们的链接依赖：
 
 | 产物 | 是否链接 `Sparkle.framework` |
 | --- | --- |
@@ -247,12 +277,14 @@ PaneSpace 不做公证，hardened runtime 换不到任何东西，却让应用�
 | `Downloader.xpc` | 否（Foundation、Security） |
 
 四个都是独立进程，加载的全是系统框架，**library validation 对它们不适用**，
-所以保留上游的 runtime 标志既没有代价，也保住了它们的 entitlements。
-这也是「宿主与嵌套产物用不同标志」的原因，不是遗漏。
+所以它们不需要 `disable-library-validation`，也不需要 `sign_one` 传入宿主的
+entitlements 文件——`Autoupdate` 自己的 `com.apple.application-identifier` 必须保住。
 
 **如果将来改用 Developer ID 签名并做公证，这一节必须重新评估。** 那时宿主和框架
-会有同一个 Team ID，library validation 可以通过，hardened runtime 就重新变成
-公证的必要条件而不是负担。判断依据是那时的 Team ID，而不是本文档的结论。
+会有同一个 Team ID，library validation 可以直接通过，
+`com.apple.security.cs.disable-library-validation` 就应该从
+`scripts/PaneSpace.entitlements` 里删掉，而不是留着。判断依据是那时的 Team ID，
+而不是本文档的结论。
 
 ### 3. 签名校验
 
@@ -542,6 +574,61 @@ signature OK: clean.zip
 点一次授权来最终确认**（装旧版本 → 授权桌面/文稿/下载 → 用本地 appcast 升级 →
 确认不再弹授权；PaneSpace 不要放在下载或桌面目录里测）。
 
+### 7b. 打包后的启动冒烟测试（2026-10-10，第四轮）
+
+§7 里的端到端验证是一次性的、本机手工做的，跑一次就没了。**第四轮把它写成了脚本**：
+`scripts/launch-smoke-test.sh`，任何人对任何一个已打包的 bundle 都能重跑同一组判定。
+把它接进 `ci.yml` 和 `release.yml` 是同一轮的收尾（见 NERE-51 P2-5）。
+
+它存在的原因就是 §2b 表格里那行「验签通过但启动即死」：这种构建不会被任何
+codesign 检查发现。脚本判四件事，每件对应一种失败：
+
+| 判定 | 失败时的含义 |
+| --- | --- |
+| 进程存活 ≥10s（默认） | 应用根本没起来，或起来就崩 |
+| 输出里没有 dyld 报错 | 起来了但某个库没能映射，只是恰好还没崩 |
+| `lsof` 里能看到 `Frameworks/Sparkle.framework/` | 框架完全没被加载 |
+| `DYLD_INSERT_LIBRARIES` 被忽略 | runtime 没真正生效（或多了 `allow-dyld-environment-variables`） |
+
+第四项用 `scripts/dyld-injection-probe.c` 编出来的 dylib 实测，不靠读 entitlements
+推断。**同一个探针先注入一个未签名的可执行文件作为正向对照**——对照不工作就说明
+探针本身坏了，「没有生效」就什么都不能证明。
+
+第四轮的实测（ad-hoc，`make app` 默认构建）：
+
+```
+$ ./scripts/launch-smoke-test.sh
+Positive control: DYLD_INSERT_LIBRARIES works on an unsigned process
+Survived 10s
+No dyld errors in the app's output
+Sparkle.framework is loaded
+DYLD_INSERT_LIBRARIES is ignored
+Launch smoke test passed: …/dist/PaneSpace.app
+```
+
+负向测试：把同一个 bundle 重新签成「`-o runtime` 但不带 entitlement」，再跑同一个脚本：
+
+```
+$ codesign --verify --deep --strict --verbose=2 /tmp/broken.app
+/tmp/broken.app: valid on disk
+/tmp/broken.app: satisfies its Designated Requirement      # exit 0
+
+$ ./scripts/launch-smoke-test.sh /tmp/broken.app
+--- output from the app ---
+       dyld[63247]: Library not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle
+         …
+         Reason: … code signature … not valid for use in process: mapping process
+         and mapped file (non-platform) have different Team IDs …
+--- end of output ---
+error: the app exited with code 134 before the 10s mark
+```
+
+**验签通过、冒烟失败**，这正是这个检查要拦下的组合。
+
+**前置条件：runner 需要有窗口服务器。** 没有 Aqua 会话时 AppKit 应用会以
+「FAILED to establish the default connection to the WindowServer」死掉，那是环境问题
+不是打包问题。脚本先查 `launchctl managername`，不是 `Aqua` 就直接报成环境问题并退出。
+
 ### 8. 体积与许可证
 
 | | 大小 |
@@ -657,14 +744,26 @@ feed 放在公开的固定 URL 上，所以**对 feed 本身也签名**：
 `build-app.sh` 里写入 Info.plist。否则通道标签和 `minimumSystemVersion`
 可以被改而不动更新本身的签名。
 
-### 决定 5：宿主不启用 hardened runtime
+### 决定 5：宿主启用 hardened runtime，并只带 `disable-library-validation`
 
-依据见 §2b 的实测。PaneSpace 不做公证，hardened runtime 带来的 library validation
-会让自签名或 ad-hoc 签名的应用**无法启动**，而所有 `codesign` 校验仍然通过。
-脚本对「宿主带 runtime」做了显式断言，命中即失败。
+**2026-10-10 修订**：本条原为「宿主不启用 hardened runtime」，依据是 §2b 的实测。
+实测本身没错，错的是从「library validation 必然失败」推到「所以不用 runtime」——
+两者之间隔着一项可以单独关闭的检查。第四轮按 CR 复测改为本条。
+
+PaneSpace 不做公证，宿主和 Sparkle.framework 没有共同 Team ID，
+`com.apple.security.cs.disable-library-validation` 是让 library validation 能通过
+（准确说是被跳过）的最小授权。带上它之后 runtime 的其余部分照常生效：注入、
+JIT、匿名可执行内存、未签名代码仍然一律拒绝，实测见 §2b 与 §7b。
+
+脚本对这个组合做双向断言：宿主必须有 runtime 标志，且签名里的 entitlements
+必须与 `scripts/PaneSpace.entitlements` 逐字一致——多一项也算失败。**理由见 §2b
+第三行：只验签的检查放行了一个根本启动不了的构建，所以 CI 里还要真的启动一次。**
 
 嵌套产物不受这条约束（它们不链接 `Sparkle.framework`，只加载系统框架），
-因此保留上游的 runtime 标志。
+因此保留上游的 runtime 标志和自己的 entitlements，不挂宿主这一份。
+
+**将来改用 Developer ID 签名时，本条要重新评估**：那时 Team ID 存在，
+library validation 可以直接通过，`disable-library-validation` 应当删掉。
 
 ### 决定 6：不在本阶段处理 TCC 授权的端到端验证
 
@@ -758,8 +857,9 @@ PaneSpace 的量级下已由 Rowan 接受。若将来完整包显著变大（例
    规则见决定 3（哪些清、哪些不清、为什么）。
 7. **在真实用户会话里验证一次 TCC 授权跨升级保持**（桌面/文稿/下载）。
 8. 首次安装仍需「仍要打开」（未公证），这是既定限制，不因本 ADR 改变。
-9. **如果将来改用 Developer ID + 公证，重新评估 §2b**：那时 Team ID 存在，
-   library validation 可以通过，hardened runtime 就该加回来。
+9. **如果将来改用 Developer ID + 公证，重新评估 §2b 与决定 5**：那时 Team ID 存在，
+   library validation 可以通过，`com.apple.security.cs.disable-library-validation`
+   应当从 `scripts/PaneSpace.entitlements` 里删掉，而不是留着当默认。
 10. **如果完整包体积显著变大，重新评估决定 7 的 delta 取舍。**
 
 **已知可优化项（不阻断，不在本 ADR 承诺）：**
