@@ -95,7 +95,14 @@ rm -rf ~/PaneSpace-signing
 
    **appcast 在 tag 推送时就生成好了，几天后才提交。** 为了让提交方知道这份快照是不是已经过期，build 会把它当时读到的 `appcast` 分支提交记到 `appcast-base.txt`（分支还不存在时记 `none`），一起作为附件上传。`publish-appcast` fetch 之后会比对：分支 HEAD 与记录不一致就报错退出，不会写入。场景是有两个 draft 同时挂着，先发布 B 再发布先打的 A，A 的快照里没有 B 的条目，整份覆盖就会把 B 从 feed 里抹掉。
 
-   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。按错误信息恢复：
+   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。
+
+   **重跑前先读这一条。** Actions 上的 Re-run 会重新构建并重新上传资产，而上传用的是
+   `gh release upload --clobber`——也就是用新构建的 zip / sha256 / sig **替换** Release 上
+   已经公开的那一份。Release 已经公开、用户已经下载过的话，重跑会让他们手里的文件和
+   之前下载的静默对不上。确认新旧一致再重跑。
+
+   按错误信息恢复：
 
    | 报错 | 恢复步骤 |
    | --- | --- |
@@ -103,7 +110,29 @@ rm -rf ~/PaneSpace-signing
    | `The appcast branch does not exist, but this appcast was built on …` | 分支被删了。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
    | `carries no appcast-base.txt` | 这个 Release 是旧版 workflow 建的，没有 base 附件。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
    | `answered HTTP 404` | 刚公开时 CDN 可能短暂返回 404。重跑这个 job 即可；持续失败说明 Release 上的附件确实缺失，回上一条处理。 |
-   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。
+   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。 |
+   | 重跑入口不见了（运行超过 30 天） | 用 workflow 的 **Run workflow** 手动补跑，见下。
+
+   ### 超过 30 天后的补跑入口
+
+   GitHub 只允许重跑 30 天内的工作流运行，更早的连 Re-run 按钮都没有。为此
+   `.github/workflows/release.yml` 开了 `workflow_dispatch`，**它只是上面这些恢复步骤的手动
+   入口，不新增任何自动发布路径**——只有人在 Actions 页面上点「Run workflow」才会触发，
+   跑的内容与对应的事件触发运行完全一样。
+
+   在 Actions 里打开 Release workflow → Run workflow，填两个输入：
+
+   | 输入 | 说明 |
+   | --- | --- |
+   | `job` | `build` 重新签名、打包并上传资产（`publish` job 会跟着跑）；`publish-appcast` 只重新提交 feed |
+   | `tag` | 要补跑的 tag，例如 `v0.2.0`，必须与 Release 上现有的 tag 完全一致 |
+
+   选 `job: build` 等价于当年的 Re-run all jobs，**同样带 `--clobber`**，先读上面那条警告
+   再决定。选 `job: publish-appcast` 是补跑那半边：重新检查 Release 是否已公开、重新下载
+   它携带的 appcast 和 base，再提交到 `appcast` 分支。
+
+   手动补跑不绕过任何检查：Release 必须是公开状态，feed 里这个 tag 的每个下载地址必须
+   当场返回 200，且 feed 的基线提交必须与 `appcast` 分支当前 HEAD 一致，否则照样报错退出。
 
 发布过程全在 CI 上完成，本机不生成 keychain，也不需要本地清理。
 
