@@ -410,7 +410,11 @@ final class UpdateModelTests: XCTestCase {
         clock.advance(by: UpdateModel.checkInterval)
         clock.finishSleeps()
 
-        await waitUntil { await feed.requestCount >= 2 }
+        // Wait for the second interval to be recorded, not for the second request to start.
+        // `requestCount` counts a request the moment it begins, which is before the schedule
+        // reaches its next sleep. Stopping the model in between cancels the loop, and a cancelled
+        // sleep never records an interval, so the gap under test would be missing by one.
+        await waitUntil { clock.sleepCount >= 2 }
         model.stop()
 
         let requests = await feed.requestCount
