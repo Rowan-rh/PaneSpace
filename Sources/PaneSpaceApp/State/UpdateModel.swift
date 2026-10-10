@@ -483,6 +483,25 @@ final class UpdateModel: ObservableObject {
         // Kept in step with the store so the write above is not re-applied as an external change.
         observedSkippedVersion = Self.storedSkippedVersion(in: defaults, usesSparkle: usesSparkle)
         clearIfShowing(version)
+        retireResultForSkippedRelease(version)
+    }
+
+    /// Drops a manual result that names the version the user just skipped.
+    ///
+    /// The fallback channel keeps the release itself in `lastManualResult`, so without this the
+    /// fallback kept saying "0.3.0 is available" one line above "Skipped version: 0.3.0" — the same
+    /// version described both ways, which is what 3b was about on the Sparkle side. It is the same
+    /// retirement: a line that contradicts another is worse than no line, and Settings falls back to
+    /// the time of the last check.
+    ///
+    /// Only the skipped version is retired. Another release's "available" answer is still true, and
+    /// blanking it would throw away the one line telling the user there is something to install.
+    private func retireResultForSkippedRelease(_ version: String) {
+        guard case .available(let release) = lastManualResult else { return }
+        // Matched on both, because `skip(version:)` is called with the display version while
+        // `isOfferable` compares either spelling, and the two can differ (`v0.3.0`).
+        guard release.displayVersion == version || release.tag == version else { return }
+        lastManualResult = nil
     }
 
     /// Installs the offered update.

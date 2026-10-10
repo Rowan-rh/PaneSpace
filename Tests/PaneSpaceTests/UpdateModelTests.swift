@@ -1827,4 +1827,56 @@ final class UpdateModelTests: XCTestCase {
         )
         XCTAssertNil(model.lastManualResult, "Settings falls back to the time of the last check.")
     }
+
+    /// Skipping a version has to take its "available" answer with it.
+    ///
+    /// The fallback channel keeps the release in `lastManualResult`, so after a skip Settings could
+    /// read "0.3.0 is available" above "Skipped version: 0.3.0" — the same one version described
+    /// both ways. Clearing is the same retirement 3b does when an update is found, for the same
+    /// reason: a line of Settings that contradicts another is worse than no line.
+    @MainActor
+    func testSkippingAReleaseRetiresItsAvailableResult() async {
+        let feed = StubUpdateFeed()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+        let release = makeRelease("0.3.0")
+        await feed.enqueue(.success(release))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .available(release))
+
+        model.skip(version: "0.3.0")
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+        XCTAssertNil(
+            model.lastManualResult,
+            "The version is available and skipped at once."
+        )
+        XCTAssertNil(model.availableUpdate, "The banner goes with it.")
+    }
+
+    /// Only the version that was skipped is retired.
+    ///
+    /// A different version's answer is still true, and blanking it would throw away the one line
+    /// telling the user there is something to install.
+    @MainActor
+    func testSkippingOneReleaseKeepsAnotherAvailableResult() async {
+        let feed = StubUpdateFeed()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        await model.checkNow()
+        // A later check turns up something newer, which is still offered.
+        let newer = makeRelease("0.4.0")
+        await feed.enqueue(.success(newer))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .available(newer))
+
+        model.skip(version: "0.3.0")
+
+        XCTAssertEqual(
+            model.lastManualResult,
+            .available(newer),
+            "0.4.0 is not the version that was skipped."
+        )
+    }
 }
