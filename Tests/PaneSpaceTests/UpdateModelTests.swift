@@ -1408,9 +1408,51 @@ final class UpdateModelTests: XCTestCase {
             error: sparkleError(.installationCanceledError)
         )
 
-        // The user closed the update window. That is a decision, not a feed that
-        // could not be read.
-        XCTAssertEqual(model.lastManualResult, .upToDate)
+        // The user cancelled when asked to authorize the install. An update exists
+        // and was not installed, so `.upToDate` would be a lie -- it says there is
+        // nothing to install. Settings falls back to "Last checked <time>", which
+        // claims nothing.
+        XCTAssertNil(model.lastManualResult)
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertFalse(model.isChecking)
+        XCTAssertNotNil(model.lastCheckDate)
+    }
+
+    @MainActor
+    func testAuthorizingLaterIsTreatedLikeCancelling() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // Sparkle groups 4008 with the two ordinary endings it does not even log
+        // (SPUUpdater.m:798). It used to be mapped to `.unreachable`, which made
+        // a beta user who said "not now" see a failed check.
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationAuthorizeLaterError)
+        )
+
+        XCTAssertNil(model.lastManualResult)
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testDecliningTheInstallKeepsThePreviousManualResult() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.appcastError))
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        // Keeping the previous value is the whole point: the new check answers
+        // nothing, so overwriting whatever was there -- with `.upToDate` or with a
+        // failure -- would be inventing an answer.
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+        // A previous failure is still cleared: this check itself did not fail.
         XCTAssertNil(model.lastAutomaticFailure)
     }
 
@@ -1425,6 +1467,22 @@ final class UpdateModelTests: XCTestCase {
         )
 
         XCTAssertNil(model.lastAutomaticFailure)
+        // A scheduled check never publishes a manual result in the first place.
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    @MainActor
+    func testAuthorizingLaterIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.installationAuthorizeLaterError)
+        )
+
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertNil(model.lastManualResult)
     }
 
     @MainActor
@@ -1434,7 +1492,7 @@ final class UpdateModelTests: XCTestCase {
 
         model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.appcastError))
 
-        // Only the two endings of a completed cycle are reclassified. A feed that
+        // Only the endings of a completed cycle are reclassified. A feed that
         // cannot be parsed is still a failure, or the retry the UI offers would
         // never appear for the problem it was written for.
         XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))

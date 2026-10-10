@@ -530,6 +530,15 @@ final class UpdateModel: ObservableObject {
         switch updateCheck {
         case .updates:
             lastAutomaticFailure = nil
+            // The user cancelled at the authorization prompt, or chose to be asked again later. An
+            // update exists and was not installed, so neither answer is true: reporting `.upToDate`
+            // would tell the user there is nothing to install when the thing they just dismissed is
+            // sitting right there. `.failed` would be worse -- they did nothing wrong, and there is
+            // nothing to retry. `lastManualResult` keeps whatever the previous check said, and
+            // Settings falls back to "Last checked <time>", which claims nothing about the outcome.
+            if error.map(Self.isSparkleInstallationDeclined) ?? false {
+                return
+            }
             if let failure {
                 lastManualResult = .failed(failure)
             } else {
@@ -556,15 +565,19 @@ final class UpdateModel: ObservableObject {
 
     /// Whether a Sparkle error is the normal end of a cycle rather than a failure.
     ///
-    /// Sparkle reports through one channel, and two results travel down it that
+    /// Sparkle reports through one channel, and three results travel down it that
     /// are not failures at all:
     ///
     /// - `SUNoUpdateError` — the feed was fetched and there is nothing newer than
     ///   this build. That is the answer to the question the user asked.
-    /// - `SUInstallationCanceledError` — the update session was closed without
-    ///   installing, which is the user declining, not the feed misbehaving.
+    /// - `SUInstallationCanceledError` — the user cancelled the install when
+    ///   prompted for authorization, which is them declining, not the feed
+    ///   misbehaving. Sparkle's own wording for it, in `SPUUpdaterDelegate.h`.
+    /// - `SUInstallationAuthorizeLaterError` — the same moment answered the other
+    ///   way: "not now, ask me again". Sparkle groups it with the two above in
+    ///   `SPUUpdater.m:798`, where it declines even to log them.
     ///
-    /// Left alone, both reached `mapSparkleError`'s `default` arm and became
+    /// Left alone, all three reached `mapSparkleError`'s `default` arm and became
     /// `.unreachable`: a manual check that found nothing reported "the update
     /// server could not be reached", and a scheduled one recorded the same as a
     /// background failure worth a retry. Neither is retryable and neither is
@@ -580,7 +593,24 @@ final class UpdateModel: ObservableObject {
         // Converted through the enum's own type for the same reason as
         // `mapSparkleError`: the code space is `SUError`'s, not an `Int`'s.
         let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
-        return code == .some(.noUpdateError) || code == .some(.installationCanceledError)
+        return code == .some(.noUpdateError) || isInstallationDeclined(code)
+    }
+
+    /// Whether a Sparkle error means the user walked away from an available update.
+    ///
+    /// Distinct from `isOrdinarySparkleOutcome`, which only says the cycle did not
+    /// fail. These two are ordinary endings that still leave an update uninstalled,
+    /// so a manual check must not answer the user with `.upToDate` -- see the
+    /// `.updates` arm of `finishSparkleCycle`.
+    static func isSparkleInstallationDeclined(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
+        return isInstallationDeclined(code)
+    }
+
+    private static func isInstallationDeclined(_ code: SUError?) -> Bool {
+        code == .some(.installationCanceledError) || code == .some(.installationAuthorizeLaterError)
     }
 
     /// Normalizes a Sparkle error into the coarse cases the UI already knows how to word.
