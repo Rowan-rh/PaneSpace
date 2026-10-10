@@ -95,6 +95,13 @@ final class UpdateModel: ObservableObject {
     /// When the last check finished, whether it succeeded or not.
     @Published private(set) var lastCheckDate: Date?
     /// The outcome of the last check the user asked for; nil until there has been one.
+    ///
+    /// A scheduled check that finds an update also writes this, so the name is now narrower than
+    /// the property: on the fallback path that check can say `.available(release)` because it holds
+    /// the `ReleaseInfo`, and on the Sparkle path it clears the value rather than leave an answer
+    /// that the banner has already contradicted. Keeping a correct "0.3.0 is available" or an
+    /// honest blank was judged worth the wider meaning, since the alternative is Settings claiming
+    /// the app is up to date while an update sits on the banner.
     @Published private(set) var lastManualResult: UpdateCheckResult?
     /// The version the user chose not to hear about again.
     ///
@@ -543,12 +550,31 @@ final class UpdateModel: ObservableObject {
         guard let offer else { return }
         isChecking = false
         availableUpdate = .sparkle(offer)
+        retireSupersededManualResult()
     }
 
     /// Records that Sparkle finished looking, whether or not an update was found.
     func noteSparkleFoundUpdate() {
         isChecking = false
         lastCheckDate = clock.now()
+        retireSupersededManualResult()
+    }
+
+    /// Withdraws the last manual check's answer, because an update now exists.
+    ///
+    /// "PaneSpace is up to date" and a banner offering 0.3.0 cannot both be true of this app. The
+    /// answer describes the check that produced it, and the banner outlives that check, so the
+    /// moment a usable update is known the answer stops being current — including when a *later,
+    /// different* check found it, and including when the user then dismisses the install prompt,
+    /// which leaves the banner up while asking for no verdict at all.
+    ///
+    /// `UpdateCheckResult.available` would carry the finding better, but it holds a `ReleaseInfo`
+    /// and only the fallback channel has one: a Sparkle offer knows its display version, not the
+    /// release it came from or when that was published. Filling those in would put a URL and a date
+    /// in front of the user that nothing stands behind, so the result is cleared and Settings falls
+    /// back to the time of the last check, which claims nothing about the outcome.
+    private func retireSupersededManualResult() {
+        lastManualResult = nil
     }
 
     /// Drops an offer the last check did not confirm.
@@ -606,8 +632,9 @@ final class UpdateModel: ObservableObject {
             // update exists and was not installed, so neither answer is true: reporting `.upToDate`
             // would tell the user there is nothing to install when the thing they just dismissed is
             // sitting right there. `.failed` would be worse -- they did nothing wrong, and there is
-            // nothing to retry. `lastManualResult` keeps whatever the previous check said, and
-            // Settings falls back to "Last checked <time>", which claims nothing about the outcome.
+            // nothing to retry. The banner is still up, so a previous check's answer was already
+            // dropped when the update was found; had nothing superseded it, Settings would be
+            // showing "Last checked <time>", which claims nothing about the outcome either way.
             if error.map(Self.isSparkleInstallationDeclined) ?? false {
                 return
             }
@@ -796,6 +823,12 @@ final class UpdateModel: ObservableObject {
         switch result {
         case .available(let release):
             availableUpdate = .release(release)
+            // A scheduled check that finds a release makes the earlier manual answer stale in the
+            // same way a Sparkle finding does. Here the release is in hand, so the result can say
+            // what was found rather than going blank — the TL's preference, and better than nil
+            // because the reader learns there is something to install. A manual check has already
+            // been assigned `.available(release)` above and never reaches here with that origin.
+            if origin != .manual { lastManualResult = .available(release) }
         case .upToDate, .failed:
             // A scheduled failure keeps whatever the user was already told, so a transient error
             // never hides a banner that is still true.

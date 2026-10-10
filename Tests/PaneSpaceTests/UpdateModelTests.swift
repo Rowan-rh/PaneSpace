@@ -1699,4 +1699,91 @@ final class UpdateModelTests: XCTestCase {
 
         XCTAssertNil(model.skippedVersion, "There is no skip to name.")
     }
+
+    /// Dismissing the install prompt must not leave the previous check's answer on screen.
+    ///
+    /// The sequence is the one acceptance walked through: a manual check reports "up to date", an
+    /// update turns up afterwards, and the user declines at the authorization prompt. The banner is
+    /// still offering 0.3.0 at that moment, so "PaneSpace is up to date" is no longer true of
+    /// anything, and Settings cannot show both.
+    @MainActor
+    func testDecliningAnInstallRetiresAnEarlierUpToDateResult() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // A manual check that found nothing.
+        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The update turns up later.
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+        // And the user declines at the authorization prompt.
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: NSError(
+                domain: SUSparkleErrorDomain,
+                code: Int(SUError.installationCanceledError.rawValue)
+            )
+        )
+
+        XCTAssertEqual(model.availableUpdate?.displayVersion, "0.3.0", "The offer is still live.")
+        XCTAssertNil(
+            model.lastManualResult,
+            "A banner offering 0.3.0 and 'PaneSpace is up to date' cannot both stand."
+        )
+    }
+
+    /// The same retirement when the update is announced without an offer to publish yet.
+    ///
+    /// Sparkle reports the finding first and hands over the offer afterwards, so the answer has to
+    /// go at the moment the finding arrives rather than when the banner appears.
+    @MainActor
+    func testFindingAnUpdateRetiresAnEarlierUpToDateResult() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        model.noteSparkleFoundUpdate()
+
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    /// The fallback channel retires it too, and can say what it found instead of going blank.
+    ///
+    /// A scheduled check that turns up a release makes an earlier manual `.upToDate` stale in the
+    /// same way, and here the release itself is available, so the answer is the one that says so.
+    @MainActor
+    func testAScheduledCheckRetiresAnEarlierUpToDateResult() async {
+        let feed = StubUpdateFeed()
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, clock: clock, defaults: defaults)
+        await feed.enqueue(.success(nil))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The scheduled check, which finds a release the manual one did not know about.
+        let later = makeRelease("0.3.0")
+        await feed.enqueue(.success(later))
+        model.start()
+        await waitUntil { await feed.requestCount >= 2 }
+        await settle()
+
+        XCTAssertEqual(model.availableUpdate?.displayVersion, "0.3.0")
+        XCTAssertEqual(
+            model.lastManualResult,
+            .available(later),
+            "A release is available, so the answer says so instead of 'up to date'."
+        )
+    }
 }
