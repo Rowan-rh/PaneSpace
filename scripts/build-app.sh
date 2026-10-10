@@ -18,6 +18,9 @@
 #                            this in CI.
 #   PANESPACE_THIN_FRAMEWORK  set to 0 to keep the framework universal
 #
+# The host bundle is always signed with hardened runtime and exactly one
+# entitlement, scripts/PaneSpace.entitlements. See the comment above sign_host.
+#
 # Sparkle 2 is linked from SwiftPM but `swift build` only links it: the framework
 # is not copied into a bundle layout and the main binary has no rpath that would
 # find it there. Both steps are done by hand below, then the result is signed
@@ -160,7 +163,8 @@ if [[ "$thin_framework" == "1" ]]; then
     # Every Mach-O inside the framework, not just the main one: the nested helpers
     # are separate binaries and codesign verifies each of them.
     while IFS= read -r binary; do
-        if lipo -archs "$binary" 2>/dev/null | tr ' ' '\n' | grep -qx 'x86_64'; then
+        archs="$(lipo -archs "$binary" 2>/dev/null || true)"
+        if [[ " $archs " == *" x86_64 "* ]]; then
             lipo -thin arm64 "$binary" -o "$binary.thin"
             mv "$binary.thin" "$binary"
         fi
@@ -172,39 +176,57 @@ fi
 # which is not a failure. Adding it blindly and ignoring the error would also hide
 # a genuine tool failure, so the existing entry is detected instead and a real
 # error still aborts the build.
-if ! otool -l "$macos_dir/PaneSpace" | grep -q "path @executable_path/../Frameworks"; then
+#
+# Every check below reads its tool's output into a variable first and greps the
+# variable, never `tool | grep -q`. Under `set -o pipefail` that idiom is a coin
+# flip, not a test: `grep -q` stops at the first match and closes the pipe, the
+# tool dies on SIGPIPE with 141, pipefail turns that into a failed pipeline, and
+# the assertion reports a perfectly good bundle as broken. Measured on this
+# machine, `codesign -dvv <app> | grep -q 'flags=.*runtime'` failed 10 times out
+# of 200 -- about one build in twenty, which on CI is a red run that nobody can
+# reproduce.
+host_rpaths="$(otool -l "$macos_dir/PaneSpace")"
+host_loads="$(otool -L "$macos_dir/PaneSpace")"
+if [[ "$host_rpaths" != *"path @executable_path/../Frameworks"* ]]; then
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/PaneSpace"
+    host_rpaths="$(otool -l "$macos_dir/PaneSpace")"
 fi
 # Confirm the load command resolves, rather than trusting that the rpath was added:
 # without it dyld reports the missing Sparkle at launch, long after the build.
-if ! otool -L "$macos_dir/PaneSpace" | grep -q "@rpath/Sparkle.framework"; then
+if [[ "$host_loads" != *@rpath/Sparkle.framework* ]]; then
     print -u2 "error: the main binary does not link Sparkle.framework"
     exit 1
 fi
 
-# The host bundle is NOT signed with hardened runtime (-o runtime).
+# The host bundle IS signed with hardened runtime (-o runtime), carrying one
+# entitlement: com.apple.security.cs.disable-library-validation, from
+# scripts/PaneSpace.entitlements.
 #
 # Hardened runtime enables library validation by default, which requires every
 # loaded library to have the same Team ID as the process or be signed by Apple.
 # A self-signed certificate and an ad-hoc signature both produce
-# "TeamIdentifier=not set", so the check can never pass and the app dies at launch:
+# "TeamIdentifier=not set", so with runtime on and no entitlement the check can
+# never pass and the app dies at launch:
 #
 #   dyld: Library not loaded: @rpath/Sparkle.framework/Versions/B/Sparkle
 #     Reason: code signature in .../Sparkle.framework/.../Sparkle not valid for
 #     use in process: mapping process and mapped file (non-platform) have
 #     different Team IDs
 #
-# PaneSpace is not notarised, so hardened runtime buys nothing and costs the app
-# its ability to start. `disable-library-validation` is deliberately NOT used: it
-# keeps the flag while switching off the one protection that matters here, which
-# is the same trade with extra indirection. The script asserts the flag is absent
-# below, because a valid signature is not a launchable one.
+# That failure is invisible to codesign -- every verify passes on the broken
+# bundle -- which is why the packaged app is launched in CI rather than only
+# verified, and why the entitlement list is asserted against the signature
+# below instead of being assumed from the flags.
 #
-# The nested helpers keep upstream's hardened runtime flag (see sign_one): they
-# are not loaded by the host process, so library validation does not apply to
-# them, and keeping it preserves the entitlements and flags Sparkle ships with.
-# ADR 0011 records that this must be re-evaluated if PaneSpace ever moves to a
-# real Developer ID.
+# The entitlement is the minimum that makes the runtime flag usable here. It
+# switches off exactly one check, the one that cannot pass without a real Team
+# ID, and keeps the rest: no dylib injection through the environment, no JIT,
+# no unsigned executable memory. It is also the narrowest grant that can be
+# made, so it is asserted to be the ONLY entitlement the host carries -- a
+# second key here would be a new capability nobody had asked for.
+#
+# ADR 0011 §2b records the measurements behind this and what changes if
+# PaneSpace ever moves to a real Developer ID.
 
 # Set before the signing functions run: they read `keychain_args` at call time, and under
 # `set -u` an unset array is an error rather than an empty list. Declaring it next to the
@@ -214,12 +236,61 @@ if [[ -n "$sign_keychain" ]]; then
     keychain_args=(--keychain "$sign_keychain")
 fi
 
+entitlements_file="$project_dir/scripts/PaneSpace.entitlements"
+if [[ ! -f "$entitlements_file" ]]; then
+    print -u2 "error: $entitlements_file is missing"
+    print -u2 "       the host needs disable-library-validation to run with hardened runtime"
+    exit 1
+fi
+
+# What the host is allowed to carry is written out here rather than taken from
+# the entitlements file. That file is editable text: the post-signature check
+# below asks "does the signature match the file", and a second key added to the
+# file would be signed, would match, and would quietly hand the host a
+# capability nobody reviewed. Pinning the grant in the script means the
+# entitlements a reader approves are the only ones a build can produce -- adding
+# a capability has to be a visible edit to this list, not a silent edit to a
+# plist. The value is pinned with the key, because disable-library-validation set
+# to false would pass every check here and still die at launch. Checked before
+# anything is signed, so an over-broad file never reaches a signature at all.
+PaneSpaceENTITLEMENTS_KEYS=(
+    com.apple.security.cs.disable-library-validation
+)
+grants_dir="$(mktemp -d)"
+trap 'rm -rf "$grants_dir"' EXIT
+{
+    print -r -- '<?xml version="1.0" encoding="UTF-8"?>'
+    print -r -- '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    print -r -- '<plist version="1.0">'
+    print -r -- '<dict>'
+    for key in "${PaneSpaceENTITLEMENTS_KEYS[@]}"; do
+        print -r -- "	<key>$key</key>"
+        print -r -- '	<true/>'
+    done
+    print -r -- '</dict>'
+    print -r -- '</plist>'
+} | plutil -convert xml1 -o - - > "$grants_dir/approved.plist"
+plutil -convert xml1 -o - "$entitlements_file" > "$grants_dir/declared.plist"
+if ! cmp -s "$grants_dir/approved.plist" "$grants_dir/declared.plist"; then
+    print -u2 "error: $entitlements_file does not match the grant in this script"
+    print -u2 "       the script grants exactly: ${PaneSpaceENTITLEMENTS_KEYS[*]}"
+    print -u2 "       granting another capability means editing that list deliberately"
+    print -u2 "       declared:"
+    plutil -p "$entitlements_file" >&2
+    exit 1
+fi
+
 sign_host() {
     local target="$1"
+    # The entitlements file is passed explicitly rather than inherited: codesign
+    # takes --preserve-metadata=entitlements from the old signature, which for a
+    # rebuilt bundle is whatever the previous build happened to carry.
     if [[ "$sign_identity" == "-" ]]; then
-        codesign --force --sign - --timestamp=none "$target"
+        codesign --force --sign - --timestamp=none \
+            -o runtime --entitlements "$entitlements_file" "$target"
     else
         codesign --force --sign "$sign_identity" --timestamp=none \
+            -o runtime --entitlements "$entitlements_file" \
             $keychain_args "$target"
     fi
 }
@@ -230,8 +301,11 @@ sign_host() {
 # both are preserved explicitly:
 #   --preserve-metadata=entitlements  keeps the upstream entitlements blob
 #   -o runtime                        keeps the hardened runtime flag
-# These helpers are separate processes, so hardened runtime does not subject them
-# to the library validation that breaks the host (see sign_host).
+# These helpers are separate processes whose load commands reference only system
+# frameworks, so hardened runtime costs them nothing here: they never load
+# Sparkle.framework, and library validation has no non-platform library to
+# reject. The host is the opposite case (see sign_host), which is why the two
+# functions differ.
 sign_one() {
     local target="$1"
     if [[ "$sign_identity" == "-" ]]; then
@@ -267,8 +341,10 @@ if [[ "$sign_identity" == "-" ]]; then
 else
     print "Signing with identity: $sign_identity"
 fi
-# No -o runtime here: see sign_host. Point codesign straight at the requested
-# keychain instead of editing the user's keychain search list.
+# Hardened runtime + exactly the entitlements in PaneSpaceENTITLEMENTS_KEYS below,
+# which is asserted against scripts/PaneSpace.entitlements. Point codesign
+# straight at the requested keychain instead of editing the user's keychain
+# search list.
 sign_host "$app_dir"
 
 codesign --verify --strict --verbose=2 "$app_dir"
@@ -276,11 +352,46 @@ codesign --verify --strict --verbose=2 "$app_dir"
 # framework that was signed after its host or left unsigned entirely.
 codesign --verify --deep --strict "$app_dir"
 
-if codesign -dvv "$app_dir" 2>&1 | grep -q 'flags=.*runtime'; then
-    print -u2 "error: host bundle must not be signed with hardened runtime"
-    print -u2 "       library validation would reject Sparkle.framework (no Team ID)"
+# The flags and the entitlements are asserted rather than assumed: they are the
+# two halves of one decision, and only the combination is launchable. Runtime
+# without disable-library-validation kills the app at launch; the entitlement
+# without the flag would be a silently degraded build that passes every check
+# above. Both halves are read back out of the signature, because a valid
+# signature is not a launchable one.
+host_flags="$(codesign -dvv "$app_dir" 2>&1)"
+if [[ "$host_flags" != *'flags='*'runtime'* ]]; then
+    print -u2 "error: host bundle is not signed with hardened runtime"
+    print -u2 "       without the flag the disable-library-validation entitlement does nothing"
+    print -u2 "       codesign -dvv reported: $host_flags"
     exit 1
 fi
+# `codesign -d --entitlements -` prints the blob as it is stored in the
+# signature, which is not the same byte sequence as the file: codesign rewrites
+# the DOCTYPE and drops the whitespace. Both sides are therefore run through
+# `plutil -convert xml1` first, so the comparison is on canonical plist text
+# rather than on formatting. What is asserted is "the host carries exactly what
+# this file says", including that nothing else crept in -- a grep for the one
+# key the file happens to hold would pass on a build that also carries a second
+# capability nobody asked for. The file was already pinned against
+# PaneSpaceENTITLEMENTS_KEYS before anything was signed, so this comparison
+# closes the remaining gap: that what ended up signed is what was declared.
+host_entitlements="$(codesign -d --entitlements - --xml "$app_dir" 2>/dev/null \
+    | plutil -convert xml1 -o - - 2>/dev/null || true)"
+expected_entitlements="$(plutil -convert xml1 -o - "$entitlements_file")"
+if [[ -z "$host_entitlements" ]]; then
+    print -u2 "error: the host bundle carries no entitlements"
+    print -u2 "       expected exactly what $entitlements_file declares"
+    exit 1
+fi
+if [[ "$host_entitlements" != "$expected_entitlements" ]]; then
+    print -u2 "error: the host bundle's entitlements do not match $entitlements_file"
+    print -u2 "       signed with:"
+    print -u2 "       $host_entitlements"
+    print -u2 "       expected:"
+    print -u2 "       $expected_entitlements"
+    exit 1
+fi
+print "Host carries hardened runtime and only $(basename "$entitlements_file")"
 
 # A nested helper left ad-hoc would still pass the checks above, because an ad-hoc
 # signature is valid on its own -- but ad-hoc is precisely the failure mode here:

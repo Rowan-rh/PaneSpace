@@ -81,6 +81,13 @@ final class UpdateModel: ObservableObject {
     /// Retained for the stage-2 path, which still skips versions itself. Sparkle keeps its skipped
     /// version in `SUSkippedVersion`; `skip(version:)` only writes this key on that path.
     static let skippedVersionKey = "skippedUpdateVersion"
+    /// The build number behind a Sparkle-path skip, paired with the display version beside it.
+    ///
+    /// Separate from `skippedUpdateVersion` on purpose: that key is the fallback path's answer to
+    /// "what was skipped" and reading one as the other is what made the split in `91da2d7`
+    /// necessary in the first place.
+    static let skippedSparkleBuildKey = "skippedSparkleBuild"
+    static let skippedSparkleDisplayVersionKey = "skippedSparkleDisplayVersion"
 
     /// The newest release worth showing, or nil when there is nothing to show.
     @Published private(set) var availableUpdate: AvailableUpdate?
@@ -88,8 +95,29 @@ final class UpdateModel: ObservableObject {
     /// When the last check finished, whether it succeeded or not.
     @Published private(set) var lastCheckDate: Date?
     /// The outcome of the last check the user asked for; nil until there has been one.
+    ///
+    /// A scheduled check that finds an update also writes this, so the name is now narrower than
+    /// the property: on the fallback path that check can say `.available(release)` because it holds
+    /// the `ReleaseInfo`, and on the Sparkle path it clears the value rather than leave an answer
+    /// that the banner has already contradicted. Keeping a correct "0.3.0 is available" or an
+    /// honest blank was judged worth the wider meaning, since the alternative is Settings claiming
+    /// the app is up to date while an update sits on the banner.
     @Published private(set) var lastManualResult: UpdateCheckResult?
     /// The version the user chose not to hear about again.
+    ///
+    /// This is what the user is shown and what `AvailableUpdate.matchesSkippedVersion` compares, so
+    /// a skip made in this session carries the display version (`0.3.0`), never the build number.
+    ///
+    /// The *store* keeps the build number, because that is the half Sparkle compares: it records
+    /// `SUSkippedVersion` as the update's `versionString`, and so does `SparkleSkippedUpdate`, for
+    /// the reason its own documentation gives. What survives a relaunch is therefore whichever half
+    /// can be recovered from disk — the display version when `skippedSparkleBuildKey` still matches
+    /// `SUSkippedVersion`, and otherwise the build number on its own.
+    ///
+    /// A relaunch can only ever do that much, because the display string is not in any key Sparkle
+    /// writes. The pair exists so the usual case keeps a version the user recognises; it cannot
+    /// cover a skip Sparkle recorded on its own, or one whose record has been cleared, and in those
+    /// cases the build number is shown rather than a stale display version.
     @Published private(set) var skippedVersion: String?
     /// Why the last scheduled check failed, so the UI can offer a retry without a modal.
     @Published private(set) var lastAutomaticFailure: UpdateFeedError?
@@ -101,12 +129,17 @@ final class UpdateModel: ObservableObject {
     private let logger = Logger(subsystem: "org.panespace.app", category: "update")
     /// Kept alive for as long as this model observes preferences.
     private var defaultsObservation: NSObjectProtocol?
-    /// The skipped version this model last reacted to.
+    /// The skipped version as the *store* holds it, the last time the model looked.
     ///
     /// `UserDefaults` posts one notification for any change, so the cached value is what tells a
-    /// write to the skipped-version key apart from an unrelated write in the same process. The two
-    /// booleans need no cache of their own: comparing against the published properties is the same
-    /// test, and a `didSet` is what keeps that comparison honest.
+    /// write to the skipped-version key apart from an unrelated write in the same process. It holds
+    /// the store's own value, never the published one, and those two are deliberately different on
+    /// the Sparkle path: the store carries the build number Sparkle compares, while `skippedVersion`
+    /// carries the display version the user reads. Comparing the incoming store value against the
+    /// published display version made the two look like an external change on every notification,
+    /// and the model answered by writing the build number back into what Settings renders.
+    /// The two booleans need no cache of their own: comparing against the published properties is
+    /// the same test, and a `didSet` is what keeps that comparison honest.
     private var observedSkippedVersion: String?
     /// The controller that owns the updater, or nil in a build that cannot ask one.
     private let updaterController: SPUStandardUpdaterController?
@@ -165,6 +198,9 @@ final class UpdateModel: ObservableObject {
         self.clock = clock
         self.defaults = defaults
         self.currentVersion = currentVersion
+        // Which channel this build runs on, decided in the branch below. Declared here because the
+        // skipped-version read that follows it cannot go through `self` yet.
+        let onSparkle: Bool
         // A caller that supplies a controller has already decided Sparkle is available. Otherwise
         // one is built only where it can work, and its delegates are attached in
         // `attachSparkleDelegate()` below: Sparkle takes them at init and has no setter, and it
@@ -173,6 +209,7 @@ final class UpdateModel: ObservableObject {
         // property is initialised.
         if let updaterController {
             self.updaterController = updaterController
+            onSparkle = true
         } else if Self.canUseSparkle {
             let delegate = SparkleUpdateDelegate()
             self.updaterController = SPUStandardUpdaterController(
@@ -181,14 +218,15 @@ final class UpdateModel: ObservableObject {
                 userDriverDelegate: delegate
             )
             sparkleDelegate = delegate
+            onSparkle = true
         } else {
             self.updaterController = nil
+            onSparkle = false
         }
-        // Sparkle writes its own skipped-version keys, and a skip made in its window persists across
-        // launches, so both sources are read here. Reading only PaneSpace's key would restore a
-        // banner for a version the user had already skipped in Sparkle.
-        let storedSkipped = defaults.string(forKey: Self.skippedVersionKey)
-            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        // Which key records a skip depends on the channel, so which key is read has to depend on it
+        // too. Both happen before every stored property is initialised, so the answer is carried out
+        // of the branch above rather than read back through `self.updaterController`.
+        let storedSkipped = Self.storedSkippedVersion(in: defaults, usesSparkle: onSparkle)
         // Read into locals first: a stored property cannot be read through `self` before every other
         // stored property is initialized.
         let storedAutomaticChecks = Self.readAutomaticChecks(from: defaults)
@@ -236,13 +274,17 @@ final class UpdateModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Removes the preference observer. The token is cleared here because a `deinit` may not touch
-    /// main-actor state, and the observer holds only a weak reference, so nothing outlives the model.
-    nonisolated deinit {
-        MainActor.assumeIsolated {
-            if let defaultsObservation {
-                NotificationCenter.default.removeObserver(defaultsObservation)
-            }
+    /// Removes the preference observer.
+    ///
+    /// `isolated deinit` rather than `nonisolated deinit` + `MainActor.assumeIsolated`. The
+    /// observer is stored main-actor state, so a `deinit` that reaches for it has to be on the main
+    /// actor; `assumeIsolated` asserted that without being able to enforce it, which is a promise
+    /// about every call site rather than a property of the type. `isolated deinit` makes the
+    /// isolation part of the declaration. The observer holds only a weak reference to the model,
+    /// so nothing outlives it either way.
+    isolated deinit {
+        if let defaultsObservation {
+            NotificationCenter.default.removeObserver(defaultsObservation)
         }
     }
 
@@ -270,19 +312,22 @@ final class UpdateModel: ObservableObject {
     private func preferencesDidChange() {
         let automaticChecks = Self.readAutomaticChecks(from: defaults)
         let prereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
-        // Both paths keep their skipped version in Sparkle's key, so one read serves both.
-        let skipped = defaults.string(forKey: Self.skippedVersionKey)
-            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        // Each channel records and compares a skip under its own key, so each reads only its own:
+        // Sparkle compares `SUSkippedVersion` / `SUSkippedMajor*`, and the fallback compares the
+        // display version PaneSpace wrote. See `storedSkippedVersion(in:usesSparkle:)`.
+        let skipped = Self.storedSkippedVersion(in: defaults, usesSparkle: usesSparkle)
 
         // Assigning the published properties is what routes the response. Each `didSet` writes the
         // value back and then performs exactly the cancellation or rescheduling a write through the
         // model would have performed, so there is one response path rather than two that can drift
-        // apart. The comparison is against the published value rather than a separate cache, so the
-        // value and the response to it cannot disagree.
+        // apart. The skipped version is compared against the cached *store* value rather than the
+        // published one, because on the Sparkle path the two differ on purpose; comparing against
+        // the published value made every notification look like a change and put the build number
+        // back into what Settings renders.
         if prereleases != includesPrereleases {
             includesPrereleases = prereleases
         }
-        if skipped != skippedVersion {
+        if skipped != observedSkippedVersion {
             observedSkippedVersion = skipped
             skippedVersion = skipped
         }
@@ -295,6 +340,41 @@ final class UpdateModel: ObservableObject {
         defaults.object(forKey: automaticallyChecksKey) == nil
             ? true
             : defaults.bool(forKey: automaticallyChecksKey)
+    }
+
+    /// The skipped version as the store holds it right now, from the channel that is running.
+    ///
+    /// One function, because the two channels record a skip under different keys and reading them
+    /// in one fixed order is how the cache and the store drift apart: `skip` and
+    /// `mirrorSkippedVersion` looked only at Sparkle's keys while the observer looked at PaneSpace's
+    /// first, so a leftover key from the other channel read as the store changing underneath it and
+    /// published a stale version over the one the user had just chosen.
+    ///
+    /// The split is not a preference between the two keys, it is which one the engine will honour.
+    /// Sparkle compares `SUSkippedVersion` and `SUSkippedMajor*`; the fallback channel compares the
+    /// display version it wrote, and a build number never matches that. A key left by the other
+    /// channel is therefore not a weaker answer, it is one nothing will act on: reading it either
+    /// way yields a version that is skipped on one channel and ignored on the other.
+    private static func storedSkippedVersion(in defaults: UserDefaults, usesSparkle: Bool) -> String? {
+        if usesSparkle {
+            guard let build = SparkleSkippedUpdate.currentSkippedVersion(in: defaults) else {
+                return nil
+            }
+            // The pair answers for the key it was written beside, and for nothing else. Sparkle
+            // owns `SUSkippedVersion`, so it can be rewritten without PaneSpace hearing about it —
+            // by a skip taken in Sparkle's own window, or by the record being cleared — and the
+            // display version left behind then describes a skip that no longer exists. Matching the
+            // build number is what tells the two apart; the comparison never changes what Sparkle
+            // skips, only what Settings shows.
+            let recordedBuild = defaults.string(forKey: skippedSparkleBuildKey)
+            let recordedDisplay = defaults.string(forKey: skippedSparkleDisplayVersionKey)
+            let skippedNow = defaults.string(forKey: SparkleSkippedUpdate.minorVersionKey)
+            if skippedNow == recordedBuild, let recordedDisplay {
+                return recordedDisplay
+            }
+            return build
+        }
+        return defaults.string(forKey: skippedVersionKey)
     }
 
     /// Whether this build can be compared with releases at all.
@@ -386,15 +466,42 @@ final class UpdateModel: ObservableObject {
     func skip(version: String) {
         if case .sparkle(let offer) = availableUpdate, offer.displayVersion == version {
             SparkleSkippedUpdate.recordSkip(of: offer, in: defaults)
-            skippedVersion = offer.versionString
+            Self.recordSkippedDisplayVersion(of: offer, in: defaults)
+            // The store keeps the build number because that is what Sparkle compares; the published
+            // property keeps the display version because that is what the user is shown and what
+            // `matchesSkippedVersion` compares. Writing the build number into the published value
+            // put "30099" in Settings and made `clearIfShowing` miss the banner it had just hidden.
+            skippedVersion = offer.displayVersion
+            // The cache holds what the store now holds, so the notification this write posts is
+            // recognised as our own and does not come back as an external change.
+            observedSkippedVersion = Self.storedSkippedVersion(in: defaults, usesSparkle: usesSparkle)
             availableUpdate = nil
             return
         }
         skippedVersion = version
         defaults.set(version, forKey: Self.skippedVersionKey)
         // Kept in step with the store so the write above is not re-applied as an external change.
-        observedSkippedVersion = version
+        observedSkippedVersion = Self.storedSkippedVersion(in: defaults, usesSparkle: usesSparkle)
         clearIfShowing(version)
+        retireResultForSkippedRelease(version)
+    }
+
+    /// Drops a manual result that names the version the user just skipped.
+    ///
+    /// The fallback channel keeps the release itself in `lastManualResult`, so without this the
+    /// fallback kept saying "0.3.0 is available" one line above "Skipped version: 0.3.0" — the same
+    /// version described both ways, which is what 3b was about on the Sparkle side. It is the same
+    /// retirement: a line that contradicts another is worse than no line, and Settings falls back to
+    /// the time of the last check.
+    ///
+    /// Only the skipped version is retired. Another release's "available" answer is still true, and
+    /// blanking it would throw away the one line telling the user there is something to install.
+    private func retireResultForSkippedRelease(_ version: String) {
+        guard case .available(let release) = lastManualResult else { return }
+        // Matched on both, because `skip(version:)` is called with the display version while
+        // `isOfferable` compares either spelling, and the two can differ (`v0.3.0`).
+        guard release.displayVersion == version || release.tag == version else { return }
+        lastManualResult = nil
     }
 
     /// Installs the offered update.
@@ -433,10 +540,28 @@ final class UpdateModel: ObservableObject {
         do {
             try updater.start()
         } catch {
-            // A bundle Sparkle refuses leaves the stage-2 feed as the working path rather than a
-            // silently dead update button. The log names the reason only.
+            // Nothing falls back to the stage-2 feed here, and the previous version of this comment
+            // said it did. The controller is a stored `let` picked in `init`, so `usesSparkle` is
+            // still true and the stage-2 schedule never starts: a bundle Sparkle refuses leaves an
+            // updater that exists but is not running. That is a dead updater rather than a wrong
+            // one -- nothing downloads or installs -- and the log is the only record of why, which
+            // is why it names the coarse case and nothing else (no URL, no path, no bundle id).
+            //
+            // Making the fallback real would mean making the controller a published `var`, because
+            // `updater` is bound directly by the Settings window and a plain `let` -> `var` change
+            // would leave those bindings showing a controller that is no longer there.
             logger.notice("Sparkle refused to start: \(self.logReason(for: Self.mapSparkleError(error)), privacy: .public)")
         }
+    }
+
+    /// Notes the display version for a skip just recorded under a build number.
+    ///
+    /// The two keys are read back together by `storedSkippedVersion(in:usesSparkle:)`, so writing
+    /// them here keeps the display version available on the next launch without adding anything
+    /// Sparkle reads or compares.
+    private static func recordSkippedDisplayVersion(of offer: SparkleUpdateOffer, in defaults: UserDefaults) {
+        defaults.set(offer.versionString, forKey: skippedSparkleBuildKey)
+        defaults.set(offer.displayVersion, forKey: skippedSparkleDisplayVersionKey)
     }
 
     /// Publishes an offer Sparkle handed the presentation of.
@@ -444,12 +569,31 @@ final class UpdateModel: ObservableObject {
         guard let offer else { return }
         isChecking = false
         availableUpdate = .sparkle(offer)
+        retireSupersededManualResult()
     }
 
     /// Records that Sparkle finished looking, whether or not an update was found.
     func noteSparkleFoundUpdate() {
         isChecking = false
         lastCheckDate = clock.now()
+        retireSupersededManualResult()
+    }
+
+    /// Withdraws the last manual check's answer, because an update now exists.
+    ///
+    /// "PaneSpace is up to date" and a banner offering 0.3.0 cannot both be true of this app. The
+    /// answer describes the check that produced it, and the banner outlives that check, so the
+    /// moment a usable update is known the answer stops being current — including when a *later,
+    /// different* check found it, and including when the user then dismisses the install prompt,
+    /// which leaves the banner up while asking for no verdict at all.
+    ///
+    /// `UpdateCheckResult.available` would carry the finding better, but it holds a `ReleaseInfo`
+    /// and only the fallback channel has one: a Sparkle offer knows its display version, not the
+    /// release it came from or when that was published. Filling those in would put a URL and a date
+    /// in front of the user that nothing stands behind, so the result is cleared and Settings falls
+    /// back to the time of the last check, which claims nothing about the outcome.
+    private func retireSupersededManualResult() {
+        lastManualResult = nil
     }
 
     /// Drops an offer the last check did not confirm.
@@ -458,14 +602,34 @@ final class UpdateModel: ObservableObject {
     }
 
     /// Mirrors a skip Sparkle recorded itself, so the banner stops offering it.
-    func mirrorSkippedVersion(_ version: String?) {
-        guard let version else { return }
-        skippedVersion = version
-        // `skippedVersion` is published rather than `private(set)`-assigned here, so the write is
-        // the one place the published state changes; the cache stops the defaults observer from
-        // re-applying the same value as an external change.
-        observedSkippedVersion = version
-        clearIfShowing(version)
+    ///
+    /// `displayVersion` is the display version, not Sparkle's `versionString`: this value is shown to
+    /// the user and compared against the banner's display version, and a build number would miss on
+    /// both counts — the banner it just dismissed would stay up. `buildNumber` is the same item's
+    /// build number, which is what Sparkle is about to put in `SUSkippedVersion` and what the pair
+    /// written for the next launch has to be matched against.
+    func mirrorSkippedVersion(_ displayVersion: String?, buildNumber: String?) {
+        guard let displayVersion, let buildNumber else { return }
+        // Both halves come from the delegate, and neither is read from the store.
+        //
+        // Sparkle asks the delegate *before* it writes the skip record
+        // (`SPUUIBasedUpdateDriver.m:257` calls the delegate, `:283` calls
+        // `SPUSkippedUpdate skipUpdate:`), so at this moment the store holds whatever was skipped
+        // last time and the build number for this skip is not in it yet. Reading it produced two
+        // failures: with nothing skipped before, the pair was never written at all and the observer
+        // then replaced the display version with the build number Sparkle had gone on to write; and
+        // with a previous skip still on record, the old build got paired with the new display
+        // version. The item already carries both, so the pairing uses them directly.
+        defaults.set(buildNumber, forKey: Self.skippedSparkleBuildKey)
+        defaults.set(displayVersion, forKey: Self.skippedSparkleDisplayVersionKey)
+        skippedVersion = displayVersion
+        // The cache holds the value Sparkle is about to write, not what it holds now: the pair above
+        // is read back through `storedSkippedVersion(in:usesSparkle:)`, which returns the display
+        // version once `SUSkippedVersion` matches the build, so caching the build leaves the
+        // notification Sparkle's write produces recognised as the expected change rather than an
+        // external one.
+        observedSkippedVersion = buildNumber
+        clearIfShowing(displayVersion)
     }
 
     /// The update session is over, so nothing about the last offer is still true.
@@ -480,17 +644,38 @@ final class UpdateModel: ObservableObject {
     func finishSparkleCycle(updateCheck: SPUUpdateCheck, error: (any Error)?) {
         lastCheckDate = clock.now()
         isChecking = false
-        let failure = error.map(Self.mapSparkleError)
+        // Sparkle hands back two ordinary endings of a cycle through the same
+        // error channel as a broken feed; `isOrdinarySparkleOutcome` tells them
+        // apart, and an ending that is not a failure must not be reported as one.
+        let failure = error.flatMap { error in
+            Self.isOrdinarySparkleOutcome(error) ? nil : Self.mapSparkleError(error)
+        }
         switch updateCheck {
         case .updates:
             lastAutomaticFailure = nil
+            // The user cancelled at the authorization prompt, or chose to be asked again later. An
+            // update exists and was not installed, so neither answer is true: reporting `.upToDate`
+            // would tell the user there is nothing to install when the thing they just dismissed is
+            // sitting right there. `.failed` would be worse -- they did nothing wrong, and there is
+            // nothing to retry. The banner is still up, so a previous check's answer was already
+            // dropped when the update was found; had nothing superseded it, Settings would be
+            // showing "Last checked <time>", which claims nothing about the outcome either way.
+            if error.map(Self.isSparkleInstallationDeclined) ?? false {
+                return
+            }
             if let failure {
                 lastManualResult = .failed(failure)
-            } else {
-                // A completed manual check either found the update the banner is already showing or
-                // found nothing. Both are a successful check, and the banner is left alone because
-                // the offer it holds was published by the delegate when it was found.
+            } else if Self.isSparkleNoUpdateError(error) {
                 lastManualResult = .upToDate
+            } else {
+                // `error == nil` on `.updates` is not "found nothing". It is how Sparkle ends the
+                // cycle when the user dismissed or skipped an update it had already found — the
+                // header calls that "the same as no error" — so writing `.upToDate` here told
+                // people the app had nothing new while the update they just waved away was still
+                // sitting on the banner. Only `SUNoUpdateError` (1001) means the check looked and
+                // found nothing; for everything else Settings falls back to "Last checked <time>",
+                // which claims nothing about the outcome.
+                lastManualResult = nil
             }
         case .updatesInBackground:
             if let failure {
@@ -506,6 +691,69 @@ final class UpdateModel: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    /// Whether this ending of a cycle is Sparkle's "there was nothing to install".
+    ///
+    /// On `.updates`, a nil ending is not that answer — it is the dismissal described above — so
+    /// only `SUNoUpdateError` qualifies. `.updatesInBackground` is not routed through this at all.
+    static func isSparkleNoUpdateError(_ error: (any Error)?) -> Bool {
+        guard let error else { return false }
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        // Converted through the enum's own type for the same reason as `mapSparkleError` and
+        // `isOrdinarySparkleOutcome`: the code space is `SUError`'s, not an `Int`'s.
+        return SUError(rawValue: Int32(truncatingIfNeeded: nsError.code)) == .some(.noUpdateError)
+    }
+
+    /// Whether a Sparkle error is the normal end of a cycle rather than a failure.
+    ///
+    /// Sparkle reports through one channel, and three results travel down it that
+    /// are not failures at all:
+    ///
+    /// - `SUNoUpdateError` — the feed was fetched and there is nothing newer than
+    ///   this build. That is the answer to the question the user asked.
+    /// - `SUInstallationCanceledError` — the user cancelled the install when
+    ///   prompted for authorization, which is them declining, not the feed
+    ///   misbehaving. Sparkle's own wording for it, in `SPUUpdaterDelegate.h`.
+    /// - `SUInstallationAuthorizeLaterError` — the same moment answered the other
+    ///   way: "not now, ask me again". Sparkle groups it with the two above in
+    ///   `SPUUpdater.m:798`, where it declines even to log them.
+    ///
+    /// Left alone, all three reached `mapSparkleError`'s `default` arm and became
+    /// `.unreachable`: a manual check that found nothing reported "the update
+    /// server could not be reached", and a scheduled one recorded the same as a
+    /// background failure worth a retry. Neither is retryable and neither is
+    /// true.
+    ///
+    /// Everything else keeps its existing meaning, including the codes that
+    /// describe a feed nobody can trust. Only codes that name a completed,
+    /// uneventful cycle are treated this way — an unlisted Sparkle error stays a
+    /// failure rather than being quietly reclassified.
+    static func isOrdinarySparkleOutcome(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        // Converted through the enum's own type for the same reason as
+        // `mapSparkleError`: the code space is `SUError`'s, not an `Int`'s.
+        let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
+        return code == .some(.noUpdateError) || isInstallationDeclined(code)
+    }
+
+    /// Whether a Sparkle error means the user walked away from an available update.
+    ///
+    /// Distinct from `isOrdinarySparkleOutcome`, which only says the cycle did not
+    /// fail. These two are ordinary endings that still leave an update uninstalled,
+    /// so a manual check must not answer the user with `.upToDate` -- see the
+    /// `.updates` arm of `finishSparkleCycle`.
+    static func isSparkleInstallationDeclined(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
+        return isInstallationDeclined(code)
+    }
+
+    private static func isInstallationDeclined(_ code: SUError?) -> Bool {
+        code == .some(.installationCanceledError) || code == .some(.installationAuthorizeLaterError)
     }
 
     /// Normalizes a Sparkle error into the coarse cases the UI already knows how to word.
@@ -619,6 +867,12 @@ final class UpdateModel: ObservableObject {
         switch result {
         case .available(let release):
             availableUpdate = .release(release)
+            // A scheduled check that finds a release makes the earlier manual answer stale in the
+            // same way a Sparkle finding does. Here the release is in hand, so the result can say
+            // what was found rather than going blank — the TL's preference, and better than nil
+            // because the reader learns there is something to install. A manual check has already
+            // been assigned `.available(release)` above and never reaches here with that origin.
+            if origin != .manual { lastManualResult = .available(release) }
         case .upToDate, .failed:
             // A scheduled failure keeps whatever the user was already told, so a transient error
             // never hides a banner that is still true.

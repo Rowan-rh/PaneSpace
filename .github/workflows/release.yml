@@ -1,8 +1,53 @@
 name: Release
 
+# Third-party actions are pinned to a commit SHA, never to a tag -- a tag like
+# `v7` is a movable name as far as a runner is concerned, and two of the three
+# actions below run with `contents: write`. The trailing comment on each `uses:`
+# line records which version that SHA is, so updating an action is an edit of
+# both halves rather than a silent drift.
+#
+# To bump one: `gh api repos/actions/<name>/git/ref/tags/v<N>` for the SHA, and
+# `gh api repos/actions/<name>/commits/<sha>` for the version it corresponds to.
+
 on:
   push:
     tags: ['v*']
+  # Manual recovery only, and a strict replacement for "Re-run all jobs", which
+  # GitHub stops offering 30 days after a run. Nothing triggers this automatically
+  # and no new publish path is added: a dispatched run does exactly what the
+  # corresponding event-driven run does, for a tag that already exists, and every
+  # fact it needs is read back from the server rather than from an event payload
+  # it would not have.
+  #
+  # Two inputs, because the two halves are guarded by mutually exclusive events
+  # and must stay that way.
+  #
+  # `build` re-signs, re-packages and re-uploads the assets, and the `publish` job
+  # follows it through `needs` -- so this is exactly what "Re-run all jobs" used to
+  # do. It re-uploads with `--clobber`, meaning it REPLACES assets that are already
+  # published. The consequence is sharper than "the files changed": if this version
+  # is already in the appcast branch, the feed still carries the previous archive's
+  # signature and length and every Sparkle client fails to verify until
+  # publish-appcast catches up. So: never dispatch `build` for a version already in
+  # the feed, and follow a `build` with `publish-appcast` immediately. See the
+  # warning in docs/RELEASING.md.
+  #
+  # `publish-appcast` re-runs only the feed commit, which is the half whose failure
+  # message tells you to re-run it and the half that has no other recovery path.
+  workflow_dispatch:
+    inputs:
+      job:
+        description: '补跑哪一半'
+        type: choice
+        required: true
+        default: build
+        options:
+          - build
+          - publish-appcast
+      tag:
+        description: '要补跑的 tag，例如 v0.2.0；必须与已存在的 Release 的 tag 完全一致'
+        type: string
+        required: true
   release:
     # Fires when a human publishes a draft, i.e. when the assets behind the
     # appcast's download URLs start answering anonymous requests. That is the
@@ -32,24 +77,64 @@ jobs:
     # would re-run the whole build and then re-upload its assets with
     # --clobber onto a Release that is already public: a second signing run, and
     # already-published zip/sig files silently replaced by newly built ones
-    # nobody has reviewed. The publish job inherits this skip through `needs`.
-    if: github.event_name == 'push'
+    # nobody has reviewed -- leaving the published feed pointing at a signature
+    # and a length that no longer match the archive. The publish job inherits
+    # this skip through `needs`.
+    # `push` plus one manual recovery entry. The dispatch adds no new capability:
+    # it re-runs this job for a tag that already has a run, which is what
+    # "Re-run all jobs" did before GitHub stopped offering it after 30 days.
+    # It carries the same hazard, which is why the entry is documented as one to
+    # use only when this version is not yet in the feed.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == 'build')
     runs-on: macos-26
     timeout-minutes: 45
+    env:
+      # The tag this run is about. `inputs.tag` is empty on every event-driven run,
+      # so the expression below is the tag that was pushed; on a dispatched run it
+      # is the tag the person typed, which `GITHUB_REF_NAME` cannot tell us (a
+      # dispatch starts from whatever branch the workflow file was selected on).
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       build_number: ${{ steps.version.outputs.build }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
+      # On a dispatched run the checkout has to follow the tag, not the branch the
+      # workflow was selected on: the scripts that produce and verify the feed are
+      # that tag's own, the same reason publish-appcast checks out the tag.
+      #
+      # `refs/tags/` is spelled out rather than passing the bare name because a bare
+      # name also resolves to a branch of the same name, and a recovery run that
+      # silently checked out some branch is the one thing that must not happen here.
+      - name: Assert the tag exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # A push event is its own proof, so only a dispatched run is checked.
+          if [[ -z "$TAG" ]]; then
+            exit 0
+          fi
+          if ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::refs/tags/$TAG does not exist on $GITHUB_REPOSITORY"
+            echo "::error::A recovery run must name a tag that was already pushed. Left unchecked, gh release create would create it on the default branch from a typo."
+            exit 1
+          fi
+          echo "refs/tags/$TAG exists"
+
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Derive version from tag
         id: version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="$RELEASE_TAG"
           read -r version build_number < <(./scripts/version-from-tag.sh "$tag")
           # A tag containing "-" is a prerelease by the repository convention.
           if [[ "$tag" == *-* ]]; then
@@ -175,8 +260,16 @@ jobs:
             echo "::error::Could not read the certificate SHA-1 fingerprint; the .p12 may not be the expected certificate"
             exit 1
           fi
-          if ! security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" \
-            2>/dev/null | grep -qF "$identity_hash"; then
+          # Read into a variable before matching, for the reason given in f4847d0
+          # for build-app.sh: under `set -o pipefail`, `security ... | grep -qF`
+          # is a coin flip -- grep exits on the first match, `security` is still
+          # writing and dies on SIGPIPE, and pipefail calls the whole pipeline
+          # failed. CI's temporary keychain holds one certificate, whose listing
+          # fits in the pipe buffer, so it does not bite there today; measured on
+          # a probe keychain holding 70 certificates (84 KB of listing) the old
+          # form reported "certificate missing" on 300 runs out of 300.
+          keychain_certificates="$(security find-certificate -a -c "PaneSpace Self-Signed" -Z "$keychain" 2>/dev/null)"
+          if [[ "$keychain_certificates" != *"$identity_hash"* ]]; then
             echo "::error::The imported certificate is not present in the temporary keychain"
             exit 1
           fi
@@ -210,6 +303,13 @@ jobs:
           fi
           codesign -dvvv dist/PaneSpace.app 2>&1 \
             | grep -E "^(Identifier|Authority|Signature|TeamIdentifier)=" || true
+
+      # Same reason as in ci.yml, and it matters more here: this is the bundle
+      # that gets zipped and published, so a build that verifies but cannot start
+      # would ship. Verifying the signature proves nothing about launchability --
+      # see ADR 0011 §2b (third row of the table) and §7b.
+      - name: Launch the packaged bundle
+        run: ./scripts/launch-smoke-test.sh
 
       - name: Package the archive
         env:
@@ -280,9 +380,30 @@ jobs:
           cp dist/PaneSpace-"$VERSION"-macos-arm64.zip "$input/"
           cp dist/PaneSpace-"$VERSION"-macos-arm64.zip.sig "$input/"
 
-          # The previous appcast is an input, not a convenience: without it every
-          # historical entry disappears and a user on an older version gets a full
-          # download or nothing.
+          # The previous appcast is an input, not a convenience: without it the
+          # feed would contain this release alone, and a user on an older version
+          # would get no upgrade path at all.
+          #
+          # It does NOT carry every historical entry forward, which is what an
+          # earlier version of this comment claimed. `generate_appcast` defaults to
+          # `--maximum-versions 3` and keeps the three newest versions *per branch*
+          # (generate_appcast/Appcast.swift:145); a non-default channel branch that
+          # the default channel has overtaken is cut down to a single entry
+          # (Appcast.swift:150-165). Measured with the pinned 2.10.0 generator and
+          # five signed archives:
+          #
+          #   5 archives, no previous appcast  -> 3 items, "Moved 2 old update
+          #                                        files to old_updates"
+          #   previous appcast (3 items) + only the new archive, i.e. exactly
+          #   the layout below                      -> 3 items, the oldest of the
+          #                                        three dropped: "Wrote 1 new
+          #                                        update, ... and removed 1 old
+          #                                        update"
+          #
+          # So the oldest entries age out of the feed as releases land. That is the
+          # generator's default, not a PaneSpace decision, and `--maximum-versions 0`
+          # would keep every entry instead -- unbounded feed growth being the reason
+          # the default exists. Changing it is a product decision, not a bug fix.
           #
           # It is read from the `appcast` branch with git rather than from the raw
           # URL the app is pointed at. raw.githubusercontent.com is CDN-cached for
@@ -317,7 +438,7 @@ jobs:
               # previous feed. It is removed, or the first release of the next
               # version would inherit a broken base.
               if git show "FETCH_HEAD:appcast.xml" > "$input/appcast.xml" 2>/dev/null; then
-                echo "Previous appcast read from the $APPCAST_BRANCH branch; history preserved"
+                echo "Previous appcast read from the $APPCAST_BRANCH branch; its entries were carried over (at most 3 per branch, see the note above)"
               else
                 rm -f "$input/appcast.xml"
                 echo "The $APPCAST_BRANCH branch has no appcast.xml yet; generating from scratch"
@@ -360,9 +481,10 @@ jobs:
           #
           # The cost is that no delta is generated: generate_appcast can only
           # build one when both archives are present, and they cannot both be
-          # present without corrupting the old URL. History is still preserved
-          # (the previous appcast carries it), so a user on an older version
-          # gets a correct full download rather than a broken one.
+          # present without corrupting the old URL. Entries the previous appcast
+          # carries are carried over unchanged (subject to the three-per-branch
+          # limit noted above), so a user on an older version gets a correct full
+          # download rather than a broken one.
           #
           # ADR 0011 decision 7 records this trade-off and the measurements
           # behind it. Rowan confirmed it on 2026-10-04; the delta upload below
@@ -431,7 +553,7 @@ jobs:
           fi
 
       - name: Upload release assets for publishing
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: panespace-release-assets
           path: |
@@ -453,10 +575,17 @@ jobs:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tag, not the branch the workflow was selected on. This job verifies
+          # the archive against the public key committed *at that tag* -- and
+          # `gh release create` below is allowed to create a tag, so a checkout
+          # that landed on some other branch would verify the release against the
+          # wrong key. Same reason the build job follows the tag.
+          ref: ${{ format('refs/tags/{0}', needs.build.outputs.tag) }}
 
       - name: Download release assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: panespace-release-assets
           path: dist
@@ -556,22 +685,35 @@ jobs:
     timeout-minutes: 15
     # The inverse guard of the build job's: this half only runs for the
     # published release, never for a tag push.
-    if: github.event_name == 'release'
+    # The inverse guard of the build job's, plus the same manual recovery entry.
+    # A dispatched run carries no `release` payload, so the tag comes from
+    # `inputs.tag` instead; every step below reads RELEASE_TAG rather than the
+    # payload directly, so there is exactly one place that knows which tag this
+    # run is about. The release's flags are not taken from the payload at all --
+    # they are read from the server -- so both triggers behave identically.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.job == 'publish-appcast')
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Check out the published tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The tag, not the default branch. The feed about to be committed was
           # generated by this tag's own scripts from this tag's own release
           # asset, so it is that tag's scripts that have to check it.
-          ref: ${{ github.event.release.tag_name }}
+          #
+          # `refs/tags/` is spelled out for the reason given in the build job's
+          # checkout: a bare name also resolves to a branch of the same name, and
+          # this job then commits the feed. Resolving to a branch here would
+          # verify one ref's scripts and publish another's result.
+          ref: ${{ format('refs/tags/{0}', env.RELEASE_TAG) }}
 
       - name: Derive version from the published tag
         id: version
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           read -r version build_number < <(./scripts/version-from-tag.sh "$TAG")
@@ -581,32 +723,52 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Advancing the feed for $version (build $build_number) from tag $TAG"
 
-      - name: Refuse to advance the feed for a draft
+      - name: Read the release's published state from the server
+        id: release_state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           DRAFT: ${{ github.event.release.draft }}
         run: |
           set -euo pipefail
-          # The payload says draft=false, but the server is the authority, and
-          # this is the one check standing between "the feed is public" and
-          # "the feed advertises 404s".
+          # One question, one answer, from the server: what does GitHub currently
+          # say this Release is? Both flags come back in one call, because reading
+          # them from two places is how they end up disagreeing.
+          #
+          # The payload is used as a cheap pre-filter only. A manually dispatched
+          # run carries no `release` payload at all, so DRAFT is empty and this
+          # branch cannot fire there -- which is exactly why the flag that matters
+          # below cannot come from the payload either.
           if [[ "$DRAFT" == "true" ]]; then
             echo "::error::The release event for $TAG says the release is still a draft; the feed stays where it is"
             exit 1
           fi
-          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft --jq .isDraft)"
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease --template '{{.isDraft}} {{.isPrerelease}}')"
+          read -r draft prerelease <<<"$state"
           if [[ "$draft" != "false" ]]; then
             echo "::error::GitHub reports $TAG as isDraft=$draft; the feed stays where it is"
             exit 1
           fi
+          # The prerelease flag used to be read from the event payload. On a
+          # manually dispatched run that payload does not exist, so the flag came
+          # back empty and `verify-appcast` saw a beta tag with no channel --
+          # refusing to publish the one feed this recovery entry exists for --
+          # while for a stable tag the check it was written to perform was simply
+          # skipped, leaving a flag flipped on the draft before publishing
+          # undetected. Reading it here covers both triggers with one path.
+          if [[ "$prerelease" != "true" && "$prerelease" != "false" ]]; then
+            echo "::error::GitHub reported isPrerelease='$prerelease' for $TAG, which is neither true nor false; refusing to guess"
+            exit 1
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "GitHub reports $TAG as published, isPrerelease=$prerelease"
 
       - name: Download the appcast and the commit it was built on
         id: download
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -639,21 +801,23 @@ jobs:
 
       - name: Assert the downloaded feed is this release's feed
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           VERSION: ${{ steps.version.outputs.version }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
+          PRERELEASE: ${{ steps.release_state.outputs.prerelease }}
         run: |
           set -euo pipefail
           # The same assertions the build job ran, re-run on the file as it
           # actually arrived: it came over the API, not out of this workflow's
           # own workspace. A prerelease flag changed on the draft before
-          # publishing is caught here rather than by stable users.
+          # publishing is caught here rather than by stable users -- and the
+          # flag it is checked against is the server's, read above, not the one
+          # the triggering event happened to carry.
           python3 scripts/appcast-tool.py verify-appcast \
             dist/appcast.xml "$VERSION" "$PRERELEASE"
 
       - name: Assert every advertised download is live
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           # The regression this job exists for, checked rather than assumed.
@@ -685,7 +849,7 @@ jobs:
       - name: Commit the appcast to the appcast branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           VERSION: ${{ steps.version.outputs.version }}
           APPCAST_BRANCH: appcast
           BASE: ${{ steps.download.outputs.appcast-base }}

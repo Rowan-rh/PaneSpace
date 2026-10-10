@@ -82,10 +82,22 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, @preconcurrency
     ) {
         MainActor.assumeIsolated {
             // A skip made inside Sparkle's own window still has to reach the published state, or the
-            // banner would keep offering what the user just dismissed. `SUSkippedVersion` is
-            // already written by Sparkle at this point; this only mirrors it for the UI.
+            // banner would keep offering what the user just dismissed.
+            //
+            // Sparkle has *not* written `SUSkippedVersion` yet. It asks the delegate first
+            // (`SPUUIBasedUpdateDriver.m:257`) and records the skip afterwards (`:283`), so the
+            // store still holds the previous skip — or nothing — at this point. Both halves of the
+            // pairing therefore come off the item rather than out of the defaults store.
             guard choice == .skip else { return }
-            model?.mirrorSkippedVersion(updateItem.versionString)
+            // `displayVersionString`, not `versionString`: what the model publishes is rendered in
+            // Settings and compared against the banner's display version, and the UI wants the
+            // version the user recognises. The build number is passed alongside it so the model can
+            // record the pair for the next launch; it is the value Sparkle will write, not one read
+            // back.
+            model?.mirrorSkippedVersion(
+                updateItem.displayVersionString,
+                buildNumber: updateItem.versionString
+            )
         }
     }
 
