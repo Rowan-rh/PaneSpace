@@ -207,6 +207,13 @@ feed URL，否则 `scripts/build-app.sh` 直接报错退出。** 没有它就会
 `PANESPACE_APPCAST_ALLOW_LOCALHOST=1`；它只放行 `127.0.0.1`，脚本会打印两行警告，
 而且**release workflow 明令禁止设置它**。
 
+那条本地 appcast 要用 Sparkle 官方的 `generate_appcast` 生成（命令见
+`docs/adr/0011-in-app-updates.md`）。用它时有一件事要知道：**即使传了 `--ed-key-file -`，
+它仍可能去读登录钥匙串里已有的 Sparkle 私钥，并为此弹一个钥匙串授权框。** appcast 照样
+能正常生成、签名也对，但那个框会留在屏幕上等你处理。独立验收时两次运行各留下一个这样的
+框，需要手动关掉。这只影响本地验证，CI 里没有这个问题——release workflow 走的是 headless
+runner，不存在交互的钥匙串。照实记录，未改动脚本。
+
 `PANESPACE_SIGN_KEYCHAIN` 可指定临时 keychain 路径；不设置时使用系统默认 keychain 搜索列表。
 
 打完的 bundle 可以直接跑打包后启动冒烟测试（会启动应用 10 秒，检查 Sparkle 已加载、
