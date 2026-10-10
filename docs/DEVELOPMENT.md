@@ -61,7 +61,22 @@ Swift Package 会处理源代码构建所需的本地化资源。`scripts/build-
 
 ## 更新检查
 
-应用启动后会向 GitHub Releases 查询是否有新版本，失败时静默，只在日志中留下一条不含 URL 参数和路径的记录。当前版本取自 `CFBundleShortVersionString`；`swift run` 这类未打包的运行没有该键，因此不会发起检查。
+更新有两个来源，用哪一个在**构建时**就定下来了，不是在运行时。带 Sparkle 且带
+`SUPublicEDKey` 的应用包（也就是 `scripts/build-app.sh` 设置了
+`PANESPACE_ED_PUBLIC_KEY` 和 `PANESPACE_APPCAST_URL` 的构建）走 Sparkle 的 appcast，
+这是正常路径。其余构建（普通 `make app`、`swift run`、测试 runner）没有 appcast 可问，
+走 `UpdateFeed` / `GitHubReleaseFeed`，即本仓库的匿名 GitHub Releases API。
+
+Sparkle 路径上 `UpdateModel` 只是状态适配层，不是更新引擎：拉取 appcast、比较版本、
+划分通道、下载、验签、替换、重启全部由 Sparkle 完成，模型只把回调翻译成横幅能渲染的
+状态。`SparkleUpdateDelegate` 是唯一实现 Sparkle 两个 delegate 协议的地方，它自己不存状态，
+只转发给 `UpdateModel`。
+
+fallback 路径上，启动时检查一次，之后每 24 小时一次；失败静默，日志里只留一条不含主机、
+路径和查询参数的原因。手动检查会报告 `upToDate`、`available` 或 `failed`。被取消的手动
+检查报告 `failed(.cancelled)` 而不是上一次的结果——取消不是一个答案。
+
+当前版本取自 `CFBundleShortVersionString`；`swift run` 这类未打包的运行没有该键，因此不会发起检查。
 
 实机验证横幅时，可以用一个环境变量覆盖当前版本，例如：
 
@@ -69,7 +84,13 @@ Swift Package 会处理源代码构建所需的本地化资源。`scripts/build-
 PANESPACE_UPDATE_FAKE_VERSION=0.0.1 swift run PaneSpace
 ```
 
-该值只影响“当前版本”，发布版本号仍以 `scripts/build-app.sh` 中的 `CFBundleShortVersionString` 为准。相关偏好为 `automaticallyCheckForUpdates`（默认开启）、`betaUpdates` 和 `skippedUpdateVersion`。
+该值只影响“当前版本”，发布版本号仍以 `scripts/build-app.sh` 中的 `CFBundleShortVersionString` 为准。
+
+偏好存在 Sparkle 自己的键里：`SUEnableAutomaticChecks`（默认开启）、`betaUpdates`、
+以及跳过记录 `SUSkippedVersion` / `SUSkippedMajorVersion` / `SUSkippedMajorSubreleaseVersion`；
+`skippedUpdateVersion` 只留给 fallback 路径。**Sparkle 存的跳过版本是更新的
+`CFBundleVersion`（构建号）**，而设置窗口显示的是跳过时记下的显示版本；从 Sparkle 的键
+恢复时只能拿到构建号，因为显示版本没有写在任何地方。
 
 `UpdateModel` 观察注入的 `UserDefaults`（`UserDefaults.didChangeNotification`），所以无论偏好是被 `@AppStorage`、`Binding` 还是直接 `defaults.set(...)` 写入，模型都会做出同样的响应：切换 Beta 会取消进行中的检查并清空旧频道的答案，关闭自动检查会同时停掉调度和在途检查。`automaticallyChecks` 和 `includesPrereleases` 是 `@Published` 属性，绑定时直接用它们本身即可，不需要额外的 `objectWillChange`：
 
@@ -86,6 +107,9 @@ SettingsToggle("Include beta updates", isOn: $model.includesPrereleases)
 - 检查长文件名和非拉丁字符。
 - 检查英文与简体中文界面，包括设置窗口的关闭控件。
 - 按改动范围检查空目录、权限错误、已断开的卷和大目录。
+- 改动打包或签名时，跑 `./scripts/launch-smoke-test.sh`：它会启动刚打好的应用包并检查它
+  真的能跑（存活 ≥10 秒、无 dyld 报错、Sparkle.framework 已加载、
+  `DYLD_INSERT_LIBRARIES` 被忽略）。
 
 ## 自动化验证
 
@@ -95,9 +119,13 @@ SettingsToggle("Include beta updates", isOn: $model.includesPrereleases)
 swift test -Xswiftc -warnings-as-errors
 make app
 codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
+./scripts/launch-smoke-test.sh
 ```
 
-CI 不会启动应用，也不会执行桌面界面检查；改动界面的人工 macOS 验证仍是完成条件。更完整的提案、分支、合并和归档流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
+最后一步会真的把打包后的应用启动一次。**这一步不是重复的**：只验签的检查会放行一个
+签名完全有效、却在启动时被 dyld 拒绝加载 Sparkle.framework 的构建（ADR 0011 §2b 有实测）。
+
+CI 不做桌面界面的目视检查；改动界面的人工 macOS 验证仍是完成条件。更完整的提案、分支、合并和归档流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
 
 ## Git 分支和发布
 
