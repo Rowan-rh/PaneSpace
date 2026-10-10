@@ -246,13 +246,17 @@ final class UpdateModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Removes the preference observer. The token is cleared here because a `deinit` may not touch
-    /// main-actor state, and the observer holds only a weak reference, so nothing outlives the model.
-    nonisolated deinit {
-        MainActor.assumeIsolated {
-            if let defaultsObservation {
-                NotificationCenter.default.removeObserver(defaultsObservation)
-            }
+    /// Removes the preference observer.
+    ///
+    /// `isolated deinit` rather than `nonisolated deinit` + `MainActor.assumeIsolated`. The
+    /// observer is stored main-actor state, so a `deinit` that reaches for it has to be on the main
+    /// actor; `assumeIsolated` asserted that without being able to enforce it, which is a promise
+    /// about every call site rather than a property of the type. `isolated deinit` makes the
+    /// isolation part of the declaration. The observer holds only a weak reference to the model,
+    /// so nothing outlives it either way.
+    isolated deinit {
+        if let defaultsObservation {
+            NotificationCenter.default.removeObserver(defaultsObservation)
         }
     }
 
