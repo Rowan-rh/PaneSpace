@@ -45,6 +45,19 @@ jobs:
       - name: Verify application signature
         run: codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
 
+      - name: Report hardened-runtime enforcement (diagnostic)
+        run: |
+          echo "--- sw_vers ---"
+          sw_vers
+          echo "--- csrutil status ---"
+          csrutil status 2>&1 || echo "csrutil: not available on this runner"
+          echo "--- nvram boot-args ---"
+          nvram boot-args 2>&1 || echo "nvram boot-args: not readable on this runner"
+          echo "--- host signature ---"
+          codesign -dvvv dist/PaneSpace.app 2>&1 || true
+          echo "--- host entitlements ---"
+          codesign -d --entitlements :- dist/PaneSpace.app 2>&1 || true
+
       # `codesign --verify` cannot see a bundle that verifies cleanly and still
       # dies at launch: hardened runtime without the right entitlement makes dyld
       # refuse to map Sparkle.framework, and every codesign check passes on it.
