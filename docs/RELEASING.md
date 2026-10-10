@@ -223,6 +223,14 @@ runner，不存在交互的钥匙串。照实记录，未改动脚本。
 ./scripts/launch-smoke-test.sh
 ```
 
+**最后一项要在本机跑才算数。** GitHub 托管的 `macos-26` runner 的 SIP 是关闭的，不执行
+hardened runtime 对 `DYLD_*` 的限制，所以脚本会检测到这一点、把这一项报成
+`skipped: this machine does not enforce hardened-runtime DYLD restrictions`。其余三项
+（存活、无 dyld 报错、Sparkle 已加载）在 CI 上仍然是硬性检查。发布前在本机
+（SIP enabled）跑一次，上面那行应当是 `Negative control: injection refused by hardened
+runtime, as expected`，最后一行是 `DYLD_INSERT_LIBRARIES is ignored`；出现 `skipped`
+就说明这台机器没有在执行这项限制，注入检查在这里等于没做。
+
 ## 为什么需要自签名证书
 
 ad-hoc 签名的 designated requirement 等于 cdhash，即**每次构建都变**。系统据此判定「这是一个新应用」，于是每次更新后桌面、文稿、下载、可移除卷等 TCC 授权都会失效，用户必须重新授权。用固定的证书签名后，designated requirement 变成：

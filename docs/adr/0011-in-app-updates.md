@@ -626,10 +626,29 @@ signature OK: clean.zip
 | `DYLD_INSERT_LIBRARIES` 被忽略 | runtime 没真正生效（或多了 `allow-dyld-environment-variables`） |
 
 第四项用 `scripts/dyld-injection-probe.c` 编出来的 dylib 实测，不靠读 entitlements
-推断。**同一个探针先注入一个未签名的可执行文件作为正向对照**——对照不工作就说明
-探针本身坏了，「没有生效」就什么都不能证明。
+推断。**同一个探针先注入两个对照程序**（`scripts/dyld-injection-target.c`，不含任何
+constructor，marker 只可能来自真实注入）：
 
-第四轮的实测（ad-hoc，`make app` 默认构建）：
+- **正向对照**：不签 hardened runtime，注入必须成功。不成功就说明探针坏了，
+  下面「没有生效」什么都不能证明。
+- **负向对照**：签 `-o runtime` 加 `{com.apple.security.cs.disable-library-validation: true}`，
+  注入必须被拒。它被注入只说明一件事：这台机器不执行 hardened runtime 对 DYLD 的
+  限制。这时脚本把第四项报成 `skipped` 并写明原因，退出 0；对照被拒而宿主被注入则
+  直接判失败。对照的 entitlements 写在脚本里，不读仓库里任何文件。
+
+**宿主签名在所有注入测试之前先过硬性前置检查**：带
+`allow-dyld-environment-variables` 或 `get-task-allow` 直接判失败，读不到 entitlements
+也算失败。否则一个「设计上就接受 DYLD_*」的 bundle 会走到跳过分支，被当成非执行限制
+的机器放过去——那正是第四项要拦的东西。
+
+**CI 上第四项会被跳过。** GitHub 托管的 `macos-26` runner 的 SIP 是关闭的
+（实测 `csrutil status` 为 disabled），不执行 hardened runtime 对 DYLD 的限制，所以
+负向对照在那里会被注入、第四项报 `skipped`。前三项（存活、无 dyld 报错、Sparkle 已
+加载）仍然是硬性检查。**第四项的硬性检查要在本机跑**（SIP enabled），发布前按
+`RELEASING.md` 的本地构建一节跑一次 `./scripts/launch-smoke-test.sh`。
+
+第四轮的实测（ad-hoc，`make app` 默认构建）。**以下为第四轮旧版脚本的输出**，那时的
+对照还没有负向对照，第四项也还没有在对照可注入时转为 `skipped`：
 
 ```
 $ ./scripts/launch-smoke-test.sh
