@@ -163,7 +163,8 @@ if [[ "$thin_framework" == "1" ]]; then
     # Every Mach-O inside the framework, not just the main one: the nested helpers
     # are separate binaries and codesign verifies each of them.
     while IFS= read -r binary; do
-        if lipo -archs "$binary" 2>/dev/null | tr ' ' '\n' | grep -qx 'x86_64'; then
+        archs="$(lipo -archs "$binary" 2>/dev/null || true)"
+        if [[ " $archs " == *" x86_64 "* ]]; then
             lipo -thin arm64 "$binary" -o "$binary.thin"
             mv "$binary.thin" "$binary"
         fi
@@ -175,12 +176,24 @@ fi
 # which is not a failure. Adding it blindly and ignoring the error would also hide
 # a genuine tool failure, so the existing entry is detected instead and a real
 # error still aborts the build.
-if ! otool -l "$macos_dir/PaneSpace" | grep -q "path @executable_path/../Frameworks"; then
+#
+# Every check below reads its tool's output into a variable first and greps the
+# variable, never `tool | grep -q`. Under `set -o pipefail` that idiom is a coin
+# flip, not a test: `grep -q` stops at the first match and closes the pipe, the
+# tool dies on SIGPIPE with 141, pipefail turns that into a failed pipeline, and
+# the assertion reports a perfectly good bundle as broken. Measured on this
+# machine, `codesign -dvv <app> | grep -q 'flags=.*runtime'` failed 10 times out
+# of 200 -- about one build in twenty, which on CI is a red run that nobody can
+# reproduce.
+host_rpaths="$(otool -l "$macos_dir/PaneSpace")"
+host_loads="$(otool -L "$macos_dir/PaneSpace")"
+if [[ "$host_rpaths" != *"path @executable_path/../Frameworks"* ]]; then
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/PaneSpace"
+    host_rpaths="$(otool -l "$macos_dir/PaneSpace")"
 fi
 # Confirm the load command resolves, rather than trusting that the rpath was added:
 # without it dyld reports the missing Sparkle at launch, long after the build.
-if ! otool -L "$macos_dir/PaneSpace" | grep -q "@rpath/Sparkle.framework"; then
+if [[ "$host_loads" != *@rpath/Sparkle.framework* ]]; then
     print -u2 "error: the main binary does not link Sparkle.framework"
     exit 1
 fi
@@ -345,9 +358,11 @@ codesign --verify --deep --strict "$app_dir"
 # without the flag would be a silently degraded build that passes every check
 # above. Both halves are read back out of the signature, because a valid
 # signature is not a launchable one.
-if ! codesign -dvv "$app_dir" 2>&1 | grep -q 'flags=.*runtime'; then
+host_flags="$(codesign -dvv "$app_dir" 2>&1)"
+if [[ "$host_flags" != *'flags='*'runtime'* ]]; then
     print -u2 "error: host bundle is not signed with hardened runtime"
     print -u2 "       without the flag the disable-library-validation entitlement does nothing"
+    print -u2 "       codesign -dvv reported: $host_flags"
     exit 1
 fi
 # `codesign -d --entitlements -` prints the blob as it is stored in the
