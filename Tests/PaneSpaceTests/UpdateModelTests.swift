@@ -1293,6 +1293,108 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertEqual(UpdateModel.mapSparkleError(Transport()), .unreachable)
     }
 
+    // MARK: Sparkle's own endings of a cycle
+
+    /// Builds the error object Sparkle would hand back for one of its codes.
+    @MainActor
+    private func sparkleError(_ code: SUError) -> NSError {
+        NSError(domain: SUSparkleErrorDomain, code: Int(code.rawValue))
+    }
+
+    @MainActor
+    func testNoUpdateIsASuccessfulManualCheck() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+
+        // "Nothing newer" is the answer to the question the user asked. Reporting
+        // it as a failure told them the update server could not be reached, and
+        // offered a retry for something that had already succeeded.
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertFalse(model.isChecking)
+        XCTAssertNotNil(model.lastCheckDate)
+    }
+
+    @MainActor
+    func testNoUpdateIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.noUpdateError)
+        )
+
+        // A scheduled check that finds nothing is the common case, not an error
+        // worth surfacing a retry for.
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    @MainActor
+    func testACancelledInstallationIsNotAFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        // The user closed the update window. That is a decision, not a feed that
+        // could not be read.
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testACancelledInstallationIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testOtherSparkleErrorsAreStillFailures() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.appcastError))
+
+        // Only the two endings of a completed cycle are reclassified. A feed that
+        // cannot be parsed is still a failure, or the retry the UI offers would
+        // never appear for the problem it was written for.
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationError)
+        )
+
+        XCTAssertEqual(model.lastManualResult, .failed(.unreachable))
+    }
+
+    @MainActor
+    func testAnErrorFromAnotherDomainIsStillAFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        // Same code, different domain: this is somebody else's error that happens
+        // to reuse the number, and it is not Sparkle saying "no update".
+        let impostor = NSError(domain: "example.other", code: Int(SUError.noUpdateError.rawValue))
+
+        model.finishSparkleCycle(updateCheck: .updates, error: impostor)
+
+        XCTAssertEqual(model.lastManualResult, .failed(.unreachable))
+    }
+
     @MainActor
     func testTheSkippedVersionIsReadFromSparklesKeyToo() {
         let defaults = makeDefaults()

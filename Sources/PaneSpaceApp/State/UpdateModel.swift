@@ -480,7 +480,12 @@ final class UpdateModel: ObservableObject {
     func finishSparkleCycle(updateCheck: SPUUpdateCheck, error: (any Error)?) {
         lastCheckDate = clock.now()
         isChecking = false
-        let failure = error.map(Self.mapSparkleError)
+        // Sparkle hands back two ordinary endings of a cycle through the same
+        // error channel as a broken feed; `isOrdinarySparkleOutcome` tells them
+        // apart, and an ending that is not a failure must not be reported as one.
+        let failure = error.flatMap { error in
+            Self.isOrdinarySparkleOutcome(error) ? nil : Self.mapSparkleError(error)
+        }
         switch updateCheck {
         case .updates:
             lastAutomaticFailure = nil
@@ -506,6 +511,35 @@ final class UpdateModel: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    /// Whether a Sparkle error is the normal end of a cycle rather than a failure.
+    ///
+    /// Sparkle reports through one channel, and two results travel down it that
+    /// are not failures at all:
+    ///
+    /// - `SUNoUpdateError` — the feed was fetched and there is nothing newer than
+    ///   this build. That is the answer to the question the user asked.
+    /// - `SUInstallationCanceledError` — the update session was closed without
+    ///   installing, which is the user declining, not the feed misbehaving.
+    ///
+    /// Left alone, both reached `mapSparkleError`'s `default` arm and became
+    /// `.unreachable`: a manual check that found nothing reported "the update
+    /// server could not be reached", and a scheduled one recorded the same as a
+    /// background failure worth a retry. Neither is retryable and neither is
+    /// true.
+    ///
+    /// Everything else keeps its existing meaning, including the codes that
+    /// describe a feed nobody can trust. Only codes that name a completed,
+    /// uneventful cycle are treated this way — an unlisted Sparkle error stays a
+    /// failure rather than being quietly reclassified.
+    static func isOrdinarySparkleOutcome(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        // Converted through the enum's own type for the same reason as
+        // `mapSparkleError`: the code space is `SUError`'s, not an `Int`'s.
+        let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
+        return code == .some(.noUpdateError) || code == .some(.installationCanceledError)
     }
 
     /// Normalizes a Sparkle error into the coarse cases the UI already knows how to word.
