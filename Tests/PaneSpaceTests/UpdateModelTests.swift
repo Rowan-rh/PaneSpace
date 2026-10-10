@@ -1328,10 +1328,15 @@ final class UpdateModelTests: XCTestCase {
             )
         )
 
+        // A nil ending, which is what this scenario is: an update was found and the cycle closed
+        // without installing it. Sparkle's own words for a dismissed or skipped update are "the
+        // same as no error", so nil here is not a stand-in for "found nothing" — 1001 is, and
+        // `testNoUpdateIsASuccessfulManualCheck` is the case for it. Asserting `.upToDate` for this
+        // sequence was 3b's bug in its second form: the banner offers 0.3.0 on the next line.
         model.finishSparkleCycle(updateCheck: .updates, error: nil)
 
         XCTAssertFalse(model.isChecking)
-        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNil(model.lastManualResult)
         XCTAssertNotNil(model.lastCheckDate)
         // The offer survives: the check completed and found it, so clearing it here would make a
         // found update disappear at the moment it was confirmed.
@@ -1711,8 +1716,8 @@ final class UpdateModelTests: XCTestCase {
         let defaults = makeDefaults()
         let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
 
-        // A manual check that found nothing.
-        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+        // A manual check that found nothing: 1001 is how Sparkle says exactly that.
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
         XCTAssertEqual(model.lastManualResult, .upToDate)
 
         // The update turns up later.
@@ -1749,7 +1754,7 @@ final class UpdateModelTests: XCTestCase {
         let defaults = makeDefaults()
         let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
 
-        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
         XCTAssertEqual(model.lastManualResult, .upToDate)
 
         model.noteSparkleFoundUpdate()
@@ -1785,5 +1790,41 @@ final class UpdateModelTests: XCTestCase {
             .available(later),
             "A release is available, so the answer says so instead of 'up to date'."
         )
+    }
+
+    /// "Remind me later" must not be reported as "PaneSpace is up to date".
+    ///
+    /// This is the same promise 3b makes, reached by the other way a Sparkle window closes. The
+    /// banner shows 0.3.0, the user picks "Remind Me Later", Sparkle ends the update session and
+    /// then ends the cycle — with `error == nil`, because the header calls a dismissed or skipped
+    /// update "the same as no error". Only `SUNoUpdateError` (1001) means the check found nothing,
+    /// so only 1001 may write `.upToDate`.
+    @MainActor
+    func testDismissingAnUpdateIsNotReportedAsUpToDate() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // A manual check that found nothing, so there is a `.upToDate` left to be contradicted.
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The user then asked to install it, Sparkle found it, and the window was dismissed.
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+        model.endSparkleUpdateSession()
+        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+
+        XCTAssertNotEqual(
+            model.lastManualResult,
+            .upToDate,
+            "An update was found and dismissed; the app is not up to date."
+        )
+        XCTAssertNil(model.lastManualResult, "Settings falls back to the time of the last check.")
     }
 }

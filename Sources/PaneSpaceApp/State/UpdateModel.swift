@@ -640,11 +640,17 @@ final class UpdateModel: ObservableObject {
             }
             if let failure {
                 lastManualResult = .failed(failure)
-            } else {
-                // A completed manual check either found the update the banner is already showing or
-                // found nothing. Both are a successful check, and the banner is left alone because
-                // the offer it holds was published by the delegate when it was found.
+            } else if Self.isSparkleNoUpdateError(error) {
                 lastManualResult = .upToDate
+            } else {
+                // `error == nil` on `.updates` is not "found nothing". It is how Sparkle ends the
+                // cycle when the user dismissed or skipped an update it had already found — the
+                // header calls that "the same as no error" — so writing `.upToDate` here told
+                // people the app had nothing new while the update they just waved away was still
+                // sitting on the banner. Only `SUNoUpdateError` (1001) means the check looked and
+                // found nothing; for everything else Settings falls back to "Last checked <time>",
+                // which claims nothing about the outcome.
+                lastManualResult = nil
             }
         case .updatesInBackground:
             if let failure {
@@ -660,6 +666,19 @@ final class UpdateModel: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    /// Whether this ending of a cycle is Sparkle's "there was nothing to install".
+    ///
+    /// On `.updates`, a nil ending is not that answer — it is the dismissal described above — so
+    /// only `SUNoUpdateError` qualifies. `.updatesInBackground` is not routed through this at all.
+    static func isSparkleNoUpdateError(_ error: (any Error)?) -> Bool {
+        guard let error else { return false }
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return false }
+        // Converted through the enum's own type for the same reason as `mapSparkleError` and
+        // `isOrdinarySparkleOutcome`: the code space is `SUError`'s, not an `Int`'s.
+        return SUError(rawValue: Int32(truncatingIfNeeded: nsError.code)) == .some(.noUpdateError)
     }
 
     /// Whether a Sparkle error is the normal end of a cycle rather than a failure.
