@@ -36,7 +36,21 @@ gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \
   < ~/PaneSpace-signing/panespace-signing-pass.txt
 gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \
   < ~/PaneSpace-signing/ed25519-private-key.txt
+gh secret set PANESPACE_APPCAST_URL --repo Rowan-rh/PaneSpace \
+  --body "https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml"
 ```
+
+前三个来自上一步生成的目录；**第四个不是**，它是一个固定 URL：
+
+```text
+https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml
+```
+
+它指向 `appcast` 分支上的 `appcast.xml`——那是 `publish-appcast` job 写入的唯一一份
+feed，也是 `publish` job 作为 Release 附件上传的同一份文件。首次发布时这个分支
+还不存在，URL 先填好即可；分支建立之前任何一次检查更新都会失败，发布流程不会走到
+那一步。写成 secret 而不是常量是因为 URL 将来可能换载体（Pages、固定 tag 的资产），
+而换载体不应该需要改代码；发布 workflow 要求它以 `https://` 开头。
 
 注意 `base64 -i` 的参数是**文件名**，不能写成 `base64 -i < file`（那样会报 `option requires an argument -- i`）。
 
@@ -141,18 +155,37 @@ PANESPACE_VERSION=0.2.0 \
 PANESPACE_BUILD=20099 \
 PANESPACE_SIGN_IDENTITY="PaneSpace Self-Signed" \
 PANESPACE_ED_PUBLIC_KEY="$(cat scripts/update-public-ed25519.txt)" \
+PANESPACE_APPCAST_URL="https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml" \
 make app
 ```
 
+`PANESPACE_APPCAST_URL` 不能省：**设了 `PANESPACE_ED_PUBLIC_KEY` 的构建必须同时给出
+feed URL，否则 `scripts/build-app.sh` 直接报错退出。** 没有它就会产出一个带着公钥
+却没有 feed 的包——那种包在用户机器上每次检查更新都会失败，而且失败得毫无道理。
+本地想喂一个 `http://127.0.0.1` 的 appcast 做端到端验证时，可以额外设
+`PANESPACE_APPCAST_ALLOW_LOCALHOST=1`；它只放行 `127.0.0.1`，脚本会打印两行警告，
+而且**release workflow 明令禁止设置它**。
+
 `PANESPACE_SIGN_KEYCHAIN` 可指定临时 keychain 路径；不设置时使用系统默认 keychain 搜索列表。
+
+打完的 bundle 可以直接跑打包后启动冒烟测试（会启动应用 10 秒，检查 Sparkle 已加载、
+无 dyld 报错、`DYLD_INSERT_LIBRARIES` 被忽略）：
+
+```bash
+./scripts/launch-smoke-test.sh
+```
 
 ## 为什么需要自签名证书
 
 ad-hoc 签名的 designated requirement 等于 cdhash，即**每次构建都变**。系统据此判定「这是一个新应用」，于是每次更新后桌面、文稿、下载、可移除卷等 TCC 授权都会失效，用户必须重新授权。用固定的证书签名后，designated requirement 变成：
 
 ```text
-designated => identifier "org.panespace.app" and certificate root = H"..."
+designated => identifier "org.panespace.app" and certificate leaf = H"..."
 ```
+
+（自签名证书的叶子证书就是它自己的根，所以 `codesign` 给出的就是 `leaf` 这一种形式；
+换成真正的 CA 签发的证书时，同一位置可能写成 `certificate root`，两种都表示「不是
+按每次构建变化的 cdhash」。）
 
 发布 workflow 会在 designated requirement 里出现 `cdhash` 时直接失败，防止回归到 ad-hoc 状态。
 
@@ -161,7 +194,6 @@ designated => identifier "org.panespace.app" and certificate root = H"..."
 - **未公证**：应用没有 Apple 公证票据。用户**首次安装**必须在「系统设置 › 隐私与安全性」中点「仍要打开」，或 Control-点按应用选择「打开」。这不是签名失效，是 Gatekeeper 的正常行为。
 - **从 0.1.2 升级需重新授权一次**：0.1.2 是 ad-hoc 签名且没有更新器，升级到第一个证书签名的版本时会重置一次授权，之后的更新保持不变。
 - **更换或过期证书需要重新授权**：所有已安装的 PaneSpace 都会失去信任，需要用户手动重新授权。因为签名用 `--timestamp=none`，签名没有可信时间戳，证书一旦过期签名就不再有效；10 年有效期到期前需要换发新证书并重新发布，**换证书本身就会让所有用户重新授权一次**。
-- **应用内更新尚未实现**：当前阶段只完成签名与发布自动化，检查更新与应用内更新是后续阶段的工作。
 
 ## 安全注意事项
 
