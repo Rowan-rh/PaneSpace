@@ -1630,4 +1630,73 @@ final class UpdateModelTests: XCTestCase {
 
         XCTAssertEqual(model.skippedVersion, "0.3.0")
     }
+
+    /// Settings must still name a version the user recognises after a relaunch.
+    ///
+    /// Sparkle records the build number because that is what it compares, so the display version is
+    /// not in any key it writes. Without a record of its own the relaunch could only put the build
+    /// number back on screen, and "Skipped version: 30099" is not a version anyone asked to skip.
+    @MainActor
+    func testADisplayVersionSurvivesARelaunch() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
+        XCTAssertEqual(model.skippedVersion, "0.3.0", "The session already had this right.")
+
+        // A second model over the same store is the next launch.
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(
+            relaunched.skippedVersion,
+            "0.3.0",
+            "after relaunch Settings must still show the display version"
+        )
+    }
+
+    /// A display version left beside a build number that is no longer skipped is not an answer.
+    ///
+    /// Sparkle owns `SUSkippedVersion` and rewrites it without PaneSpace hearing about it. A pair
+    /// written for an earlier skip must not be shown as the current one.
+    ///
+    /// The key names are spelled out rather than taken from `UpdateModel`, because the point is
+    /// that what is on disk keeps answering the question after the code that wrote it is gone.
+    @MainActor
+    func testADisplayVersionForAnotherBuildIsNotShown() {
+        let defaults = makeDefaults()
+        defaults.set("30099", forKey: "skippedSparkleBuild")
+        defaults.set("0.3.0", forKey: "skippedSparkleDisplayVersion")
+        // A different skip is the live one.
+        defaults.set("40000", forKey: "SUSkippedVersion")
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertEqual(
+            model.skippedVersion,
+            "40000",
+            "A record for another build describes a skip that was replaced."
+        )
+    }
+
+    /// The same record is stale once the skip is gone, which Sparkle does on its own when the
+    /// installed version reaches what was skipped.
+    @MainActor
+    func testADisplayVersionForAClearedSkipIsNotShown() {
+        let defaults = makeDefaults()
+        defaults.set("30099", forKey: "skippedSparkleBuild")
+        defaults.set("0.3.0", forKey: "skippedSparkleDisplayVersion")
+        // Nothing skipped any more: Sparkle cleared its key, the pair outlives it.
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertNil(model.skippedVersion, "There is no skip to name.")
+    }
 }

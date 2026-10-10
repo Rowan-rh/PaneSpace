@@ -81,6 +81,13 @@ final class UpdateModel: ObservableObject {
     /// Retained for the stage-2 path, which still skips versions itself. Sparkle keeps its skipped
     /// version in `SUSkippedVersion`; `skip(version:)` only writes this key on that path.
     static let skippedVersionKey = "skippedUpdateVersion"
+    /// The build number behind a Sparkle-path skip, paired with the display version beside it.
+    ///
+    /// Separate from `skippedUpdateVersion` on purpose: that key is the fallback path's answer to
+    /// "what was skipped" and reading one as the other is what made the split in `91da2d7`
+    /// necessary in the first place.
+    static let skippedSparkleBuildKey = "skippedSparkleBuild"
+    static let skippedSparkleDisplayVersionKey = "skippedSparkleDisplayVersion"
 
     /// The newest release worth showing, or nil when there is nothing to show.
     @Published private(set) var availableUpdate: AvailableUpdate?
@@ -94,12 +101,16 @@ final class UpdateModel: ObservableObject {
     /// This is what the user is shown and what `AvailableUpdate.matchesSkippedVersion` compares, so
     /// a skip made in this session carries the display version (`0.3.0`), never the build number.
     ///
-    /// The *stored* skipped version is a separate question and is deliberately not normalised:
-    /// Sparkle compares skips against `versionString` and records that, so
-    /// `SparkleSkippedUpdate.recordSkip` and Sparkle itself keep writing the build number into
-    /// `SUSkippedVersion`. Restoring from that key can therefore only produce the build number,
-    /// because the display string is not on disk anywhere — a pre-existing limit of keeping one
-    /// answer to "what was skipped" in the key Sparkle reads, rather than two.
+    /// The *store* keeps the build number, because that is the half Sparkle compares: it records
+    /// `SUSkippedVersion` as the update's `versionString`, and so does `SparkleSkippedUpdate`, for
+    /// the reason its own documentation gives. What survives a relaunch is therefore whichever half
+    /// can be recovered from disk — the display version when `skippedSparkleBuildKey` still matches
+    /// `SUSkippedVersion`, and otherwise the build number on its own.
+    ///
+    /// A relaunch can only ever do that much, because the display string is not in any key Sparkle
+    /// writes. The pair exists so the usual case keeps a version the user recognises; it cannot
+    /// cover a skip Sparkle recorded on its own, or one whose record has been cleared, and in those
+    /// cases the build number is shown rather than a stale display version.
     @Published private(set) var skippedVersion: String?
     /// Why the last scheduled check failed, so the UI can offer a retry without a modal.
     @Published private(set) var lastAutomaticFailure: UpdateFeedError?
@@ -339,7 +350,22 @@ final class UpdateModel: ObservableObject {
     /// way yields a version that is skipped on one channel and ignored on the other.
     private static func storedSkippedVersion(in defaults: UserDefaults, usesSparkle: Bool) -> String? {
         if usesSparkle {
-            return SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+            guard let build = SparkleSkippedUpdate.currentSkippedVersion(in: defaults) else {
+                return nil
+            }
+            // The pair answers for the key it was written beside, and for nothing else. Sparkle
+            // owns `SUSkippedVersion`, so it can be rewritten without PaneSpace hearing about it —
+            // by a skip taken in Sparkle's own window, or by the record being cleared — and the
+            // display version left behind then describes a skip that no longer exists. Matching the
+            // build number is what tells the two apart; the comparison never changes what Sparkle
+            // skips, only what Settings shows.
+            let recordedBuild = defaults.string(forKey: skippedSparkleBuildKey)
+            let recordedDisplay = defaults.string(forKey: skippedSparkleDisplayVersionKey)
+            let skippedNow = defaults.string(forKey: SparkleSkippedUpdate.minorVersionKey)
+            if skippedNow == recordedBuild, let recordedDisplay {
+                return recordedDisplay
+            }
+            return build
         }
         return defaults.string(forKey: skippedVersionKey)
     }
@@ -433,6 +459,7 @@ final class UpdateModel: ObservableObject {
     func skip(version: String) {
         if case .sparkle(let offer) = availableUpdate, offer.displayVersion == version {
             SparkleSkippedUpdate.recordSkip(of: offer, in: defaults)
+            Self.recordSkippedDisplayVersion(of: offer, in: defaults)
             // The store keeps the build number because that is what Sparkle compares; the published
             // property keeps the display version because that is what the user is shown and what
             // `matchesSkippedVersion` compares. Writing the build number into the published value
@@ -501,6 +528,16 @@ final class UpdateModel: ObservableObject {
         }
     }
 
+    /// Notes the display version for a skip just recorded under a build number.
+    ///
+    /// The two keys are read back together by `storedSkippedVersion(in:usesSparkle:)`, so writing
+    /// them here keeps the display version available on the next launch without adding anything
+    /// Sparkle reads or compares.
+    private static func recordSkippedDisplayVersion(of offer: SparkleUpdateOffer, in defaults: UserDefaults) {
+        defaults.set(offer.versionString, forKey: skippedSparkleBuildKey)
+        defaults.set(offer.displayVersion, forKey: skippedSparkleDisplayVersionKey)
+    }
+
     /// Publishes an offer Sparkle handed the presentation of.
     func presentSparkleOffer(_ offer: SparkleUpdateOffer?) {
         guard let offer else { return }
@@ -526,6 +563,15 @@ final class UpdateModel: ObservableObject {
     /// both counts — the banner it just dismissed would stay up.
     func mirrorSkippedVersion(_ version: String?) {
         guard let version else { return }
+        // Sparkle recorded this skip itself, so the build number is already in the store and the
+        // display version arrives here; pairing them is what lets the next launch show a version
+        // the user recognises. Nothing is written when the store holds no build number: the pair is
+        // only read back when it matches `SUSkippedVersion`, and recording half of one on its own
+        // would leave a display version describing a skip that was never recorded.
+        if let build = defaults.string(forKey: SparkleSkippedUpdate.minorVersionKey) {
+            defaults.set(build, forKey: Self.skippedSparkleBuildKey)
+            defaults.set(version, forKey: Self.skippedSparkleDisplayVersionKey)
+        }
         skippedVersion = version
         // The cache holds the store's value — the build number Sparkle wrote — not the display
         // version handed over here. The store and the published property differ on purpose, so the
