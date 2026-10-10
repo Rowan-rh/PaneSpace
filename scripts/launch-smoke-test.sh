@@ -84,22 +84,33 @@ fail() {
 #
 # Read into a variable and matched there rather than piped into grep: under
 # `set -o pipefail` a `codesign | grep -q` that finds nothing is indistinguishable
-# from codesign itself failing, and this script would treat a failed read as a
-# clean one.
-host_entitlements=""
-if host_entitlements="$(codesign -d --entitlements - --xml "$app" 2>/dev/null)"; then
-    if [[ "$host_entitlements" == *com.apple.security.cs.allow-dyld-environment-variables* ]]; then
-        fail "the host carries com.apple.security.cs.allow-dyld-environment-variables" \
-            "this bundle would accept DYLD_INSERT_LIBRARIES by design; it is not the build this smoke test can vouch for" \
-            "this is checked before the injection tests on purpose: otherwise a permissive host is let off by the branch that reports a non-enforcing machine"
-    fi
-    if [[ "$host_entitlements" == *com.apple.security.security.get-task-allow* ]] \
-        || [[ "$host_entitlements" == *com.apple.security.get-task-allow* ]]; then
-        fail "the host carries com.apple.security.get-task-allow" \
-            "a debugger entitlement does not belong on a shipped bundle"
-    fi
-    print "Host entitlements do not weaken the DYLD restriction"
+# from codesign itself failing.
+#
+# A failed read is itself a failure, not a clean result. This `if` used to have
+# no else branch, so a codesign that could not read the signature took the
+# check block out of the run entirely: no error, no message, straight on to the
+# injection tests. On a machine that enforces the restriction the bundle still
+# failed later, which made the hole look closed; on the runner this whole
+# exercise is about, the control and the host would both be injected and the
+# run would exit 0 having reported nothing. That is the B5 path with a
+# different door, so the read has to succeed before the check means anything.
+# A host with no entitlements at all is not that case: codesign exits 0 and
+# prints nothing, which passes the key checks below on an empty string.
+if ! host_entitlements="$(codesign -d --entitlements - --xml "$app" 2>/dev/null)"; then
+    fail "could not read the host's entitlements" \
+        "without them this script cannot rule out a bundle that accepts DYLD_* by design" \
+        "a host with no entitlements is fine; codesign returns 0 with empty output, so this is a read failure"
 fi
+if [[ "$host_entitlements" == *com.apple.security.cs.allow-dyld-environment-variables* ]]; then
+    fail "the host carries com.apple.security.cs.allow-dyld-environment-variables" \
+        "this bundle would accept DYLD_INSERT_LIBRARIES by design; it is not the build this smoke test can vouch for" \
+        "this is checked before the injection tests on purpose: otherwise a permissive host is let off by the branch that reports a non-enforcing machine"
+fi
+if [[ "$host_entitlements" == *com.apple.security.get-task-allow* ]]; then
+    fail "the host carries com.apple.security.get-task-allow" \
+        "a debugger entitlement does not belong on a shipped bundle"
+fi
+print "Host entitlements do not weaken the DYLD restriction"
 
 # A GUI session is a precondition, not something this script can substitute
 # for. Checking it here turns an opaque WindowServer crash into one line that
