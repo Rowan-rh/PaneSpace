@@ -603,27 +603,33 @@ final class UpdateModel: ObservableObject {
 
     /// Mirrors a skip Sparkle recorded itself, so the banner stops offering it.
     ///
-    /// `version` is the display version, not Sparkle's `versionString`: this value is shown to the
-    /// user and compared against the banner's display version, and a build number would miss on
-    /// both counts — the banner it just dismissed would stay up.
-    func mirrorSkippedVersion(_ version: String?) {
-        guard let version else { return }
-        // Sparkle recorded this skip itself, so the build number is already in the store and the
-        // display version arrives here; pairing them is what lets the next launch show a version
-        // the user recognises. Nothing is written when the store holds no build number: the pair is
-        // only read back when it matches `SUSkippedVersion`, and recording half of one on its own
-        // would leave a display version describing a skip that was never recorded.
-        if let build = defaults.string(forKey: SparkleSkippedUpdate.minorVersionKey) {
-            defaults.set(build, forKey: Self.skippedSparkleBuildKey)
-            defaults.set(version, forKey: Self.skippedSparkleDisplayVersionKey)
-        }
-        skippedVersion = version
-        // The cache holds the store's value — the build number Sparkle wrote — not the display
-        // version handed over here. The store and the published property differ on purpose, so the
-        // observer would otherwise see them as an external change and replace the display version
-        // with the build number a moment later.
-        observedSkippedVersion = Self.storedSkippedVersion(in: defaults, usesSparkle: usesSparkle)
-        clearIfShowing(version)
+    /// `displayVersion` is the display version, not Sparkle's `versionString`: this value is shown to
+    /// the user and compared against the banner's display version, and a build number would miss on
+    /// both counts — the banner it just dismissed would stay up. `buildNumber` is the same item's
+    /// build number, which is what Sparkle is about to put in `SUSkippedVersion` and what the pair
+    /// written for the next launch has to be matched against.
+    func mirrorSkippedVersion(_ displayVersion: String?, buildNumber: String?) {
+        guard let displayVersion, let buildNumber else { return }
+        // Both halves come from the delegate, and neither is read from the store.
+        //
+        // Sparkle asks the delegate *before* it writes the skip record
+        // (`SPUUIBasedUpdateDriver.m:257` calls the delegate, `:283` calls
+        // `SPUSkippedUpdate skipUpdate:`), so at this moment the store holds whatever was skipped
+        // last time and the build number for this skip is not in it yet. Reading it produced two
+        // failures: with nothing skipped before, the pair was never written at all and the observer
+        // then replaced the display version with the build number Sparkle had gone on to write; and
+        // with a previous skip still on record, the old build got paired with the new display
+        // version. The item already carries both, so the pairing uses them directly.
+        defaults.set(buildNumber, forKey: Self.skippedSparkleBuildKey)
+        defaults.set(displayVersion, forKey: Self.skippedSparkleDisplayVersionKey)
+        skippedVersion = displayVersion
+        // The cache holds the value Sparkle is about to write, not what it holds now: the pair above
+        // is read back through `storedSkippedVersion(in:usesSparkle:)`, which returns the display
+        // version once `SUSkippedVersion` matches the build, so caching the build leaves the
+        // notification Sparkle's write produces recognised as the expected change rather than an
+        // external one.
+        observedSkippedVersion = buildNumber
+        clearIfShowing(displayVersion)
     }
 
     /// The update session is over, so nothing about the last offer is still true.

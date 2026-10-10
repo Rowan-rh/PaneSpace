@@ -1305,14 +1305,65 @@ final class UpdateModelTests: XCTestCase {
         // A skip made in Sparkle's own window reaches the model through the delegate, which used to
         // hand over `versionString`. Compared against the display version, a build number misses on
         // both counts: Settings shows it, and `clearIfShowing` cannot match the banner it just hid.
-        // What the delegate hands over is the display version, and the build number is already in
-        // the store under it — exactly as it is when Sparkle writes the skip itself.
+        // What the delegate hands over is the display version, and the build number comes with it.
+        //
+        // Written in Sparkle's order, which is what acceptance 4b walked into: the delegate is
+        // called first (`SPUUIBasedUpdateDriver.m:257`) and the skip is recorded afterwards (`:283`).
+        // Writing the store line first, as this used to, modelled an order Sparkle never uses and
+        // hid the bug.
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
         defaults.set("30099", forKey: "SUSkippedVersion")
-        model.mirrorSkippedVersion("0.3.0")
         await waitForDefaultsObserver()
 
         XCTAssertEqual(model.skippedVersion, "0.3.0")
         XCTAssertNil(model.availableUpdate, "The banner must go when the version on it was skipped.")
+    }
+
+    /// The Sparkle-window skip has to survive the write that follows it, and the next launch.
+    ///
+    /// Acceptance saw this on screen: skipping inside Sparkle's own window showed `30099`
+    /// immediately and still after a restart, while the same skip from PaneSpace's banner worked.
+    /// The difference is the order — the model runs before Sparkle records anything.
+    @MainActor
+    func testAMirroredSkipSurvivesTheWriteThatFollowsIt() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
+        // Sparkle records the skip after the delegate returns.
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0", "The session must not drift to the build.")
+
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(relaunched.skippedVersion, "0.3.0", "And neither must the next launch.")
+    }
+
+    /// A previous skip still on record must not be paired with this skip's display version.
+    ///
+    /// Reading the store for the build at delegate time picks up the *previous* build whenever one
+    /// is still there, which records a pair no `SUSkippedVersion` will ever match — the display
+    /// version is then written for nothing and the build number is shown after a restart.
+    @MainActor
+    func testAMirroredSkipIsNotPairedWithAPreviousBuild() async {
+        let defaults = makeDefaults()
+        // What the last launch left behind.
+        defaults.set("20000", forKey: "SUSkippedVersion")
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(
+            relaunched.skippedVersion,
+            "0.3.0",
+            "The pair has to be this skip's build, not the one it replaced."
+        )
     }
 
     @MainActor
