@@ -97,10 +97,21 @@ rm -rf ~/PaneSpace-signing
 
    如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。
 
-   **重跑前先读这一条。** Actions 上的 Re-run 会重新构建并重新上传资产，而上传用的是
-   `gh release upload --clobber`——也就是用新构建的 zip / sha256 / sig **替换** Release 上
-   已经公开的那一份。Release 已经公开、用户已经下载过的话，重跑会让他们手里的文件和
-   之前下载的静默对不上。确认新旧一致再重跑。
+   **重跑前先读这一条，它决定你该选哪个输入。** 上传用的是
+   `gh release upload --clobber`，也就是用新构建的 zip / sha256 / sig **替换** Release 上
+   已经公开的那一份。重新签名拿不回逐字节相同的产物，所以「先确认新旧一致再重跑」不是
+   麻烦，是根本做不到——不用去找这一步。
+
+   真正的问题在 feed，不在文件。这个版本的条目如果已经写进 `appcast` 分支，feed 里记的
+   还是**上一次**那个归档的 `ed25519` 签名和长度，而 Release 上的归档已经被换成了新的。
+   两边对不上，**所有 Sparkle 客户端验签失败**，在补跑 `publish-appcast` 之前谁都更新不了。
+
+   所以规则是：
+
+   - feed 里已经有这个版本 → **不要跑 `job: build`**，直接跑 `job: publish-appcast`。
+     它不碰 Release 上的资产。
+   - 已经跑了 `job: build` → **紧接着跑 `job: publish-appcast`**，把 feed 更新到新资产上。
+     中间这段时间越短越好。
 
    按错误信息恢复：
 
@@ -127,9 +138,10 @@ rm -rf ~/PaneSpace-signing
    | `job` | `build` 重新签名、打包并上传资产（`publish` job 会跟着跑）；`publish-appcast` 只重新提交 feed |
    | `tag` | 要补跑的 tag，例如 `v0.2.0`，必须与 Release 上现有的 tag 完全一致 |
 
-   选 `job: build` 等价于当年的 Re-run all jobs，**同样带 `--clobber`**，先读上面那条警告
-   再决定。选 `job: publish-appcast` 是补跑那半边：重新检查 Release 是否已公开、重新下载
-   它携带的 appcast 和 base，再提交到 `appcast` 分支。
+   选 `job: build` 等价于当年的 Re-run all jobs，**同样带 `--clobber`**，先按上面那条规则
+   判断这个版本在 feed 里是不是已经有了。选 `job: publish-appcast` 是补跑那半边：重新
+   检查 Release 是否已公开、重新下载它携带的 appcast 和 base，再提交到 `appcast` 分支——
+   资产没被动过的情况下这就是该选的那个。
 
    手动补跑不绕过任何检查：Release 必须是公开状态，feed 里这个 tag 的每个下载地址必须
    当场返回 200，且 feed 的基线提交必须与 `appcast` 分支当前 HEAD 一致，否则照样报错退出。
