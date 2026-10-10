@@ -253,16 +253,50 @@ runtime 的其余部分照常生效：
 | library validation | `cs.disable-library-validation` | **需要**（无 Team ID） |
 | 拒绝 `DYLD_INSERT_LIBRARIES` 等注入 | 否 | 不需要，保持开启 |
 | 拒绝 JIT / 匿名可执行内存 | 否 | 不需要，保持开启 |
-| 拒绝未签名代码 | 否 | 不需要，保持开启 |
+| 拒绝未签名代码 | 否 | 不需要，保持开启，但见下 |
+
+**最后一行写“保持开启”写得过满，必须说清楚它到底拦住了什么。**
+`disable-library-validation` 关掉的不是“签名有效”这项检查，而是“被加载的库必须与进程
+同 Team ID 或由 Apple 签名”这一项。于是进程仍然要求每个 dylib 有合法签名，但**签名是
+ad-hoc 的库现在也能被加载**——而 Sparkle 及其嵌套产物正是 ad-hoc 签名，关掉这项检查
+换来的是“不校验来源”，不是“可以加载任意文件”。所以它拦的是被篡改或无效签名的库，
+不拦从磁盘任何位置拿来的、签名有效的库。
+
+真正起缓解作用的是 rpath 只指向 bundle 内部。宿主二进制实测只有两条 rpath
+（`@loader_path` 和 `@executable_path/../Frameworks`），且除 Sparkle 外所有 load command
+都指向 `/System` 或 `/usr/lib`：
+
+```
+$ otool -l dist/PaneSpace.app/Contents/MacOS/PaneSpace | grep -A2 LC_RPATH | grep path
+         path @loader_path (offset 12)
+         path @executable_path/../Frameworks (offset 12)
+$ otool -L dist/PaneSpace.app/Contents/MacOS/PaneSpace | grep -v '^/System\|^/usr/lib'
+	@rpath/Sparkle.framework/Versions/B/Sparkle (compatibility version 1.6.0, current version 2.10.0)
+```
+
+两条都落在 `PaneSpace.app` 内部，所以攻击者得先把文件放进应用包（或替换掉包里的
+Frameworks）才能让 dyld 找到它——这需要写权限，而那本身就是另一道门。嵌套的
+`Autoupdate` 和 `Updater.app` 更彻底：没有任何 rpath，只链接系统库。
+
+一句话：**DLV 放宽的是签名来源的校验，路径上的把关交给 rpath。** 如果哪天往宿主里
+加一条指向 bundle 外部的 rpath（`/usr/local/lib`、`/opt/homebrew/lib` 这类），这项
+取舍就不再成立，必须重新评估。
 
 实测确认注入确实被拒绝：第四行里 `DYLD_INSERT_LIBRARIES` 指向一个真的会被加载的
 dylib，宿主正常启动 5 秒且该 dylib 的构造函数从未执行（同一个探针注入一个未签名
 进程时正常执行，见 `scripts/launch-smoke-test.sh` 的正向对照）。
 
-**entitlements 严格只有这一项。** 脚本不只断言 runtime 标志在，而是把签名里的
-entitlements blob 取出来，和 `scripts/PaneSpace.entitlements` 规范化后逐字比对
-（`plutil -convert xml1`），不一致就 `exit 1`。逐字比对而不是 grep 那一个 key，
-是因为多出来的第二项就是多出来的一项能力，而那不该由构建脚本悄悄决定。
+**entitlements 严格只有这一项。** 授权清单写在 `build-app.sh` 的
+`PaneSpaceENTITLEMENTS_KEYS` 里，构建前先生成一份参考 plist，和
+`scripts/PaneSpace.entitlements` 规范化后逐字比；签名后把签名里的 entitlements blob
+取出来再和该文件逐字比（两边都过 `plutil -convert xml1`），任何一处不一致就
+`exit 1`。两条断言缺一不可：只比签名只能证明“签名等于文件”，而那个文件是可编辑的
+文本，往里加一个 key 照样能构建出来；只比文件则证明不了签进去的到底是什么。
+
+写成逐字比对而不是 grep 那一个 key，是因为多出来的第二项就是多出来的一项能力，
+而那不该由构建脚本悄悄决定；授权清单放在脚本里，是为了让新增能力必须是一次显眼的
+改动，而不是对某个 plist 的静默修改。
+
 因此该文件里**不能写注释**——codesign 的 plist 解析器不接受 XML 注释，
 所以说明文字都在 `build-app.sh` 里。
 
@@ -753,10 +787,13 @@ feed 放在公开的固定 URL 上，所以**对 feed 本身也签名**：
 PaneSpace 不做公证，宿主和 Sparkle.framework 没有共同 Team ID，
 `com.apple.security.cs.disable-library-validation` 是让 library validation 能通过
 （准确说是被跳过）的最小授权。带上它之后 runtime 的其余部分照常生效：注入、
-JIT、匿名可执行内存、未签名代码仍然一律拒绝，实测见 §2b 与 §7b。
+JIT、匿名可执行内存仍然一律拒绝，实测见 §2b 与 §7b。“拒绝未签名代码”这项的准确
+含义见 §2b：它拦的是无效或被篡改的签名，不是 ad-hoc 签名的库，路径上的把关由
+rpath 只指向 bundle 内部来完成。
 
-脚本对这个组合做双向断言：宿主必须有 runtime 标志，且签名里的 entitlements
-必须与 `scripts/PaneSpace.entitlements` 逐字一致——多一项也算失败。**理由见 §2b
+脚本对这个组合做双向断言：宿主必须有 runtime 标志，且 entitlements 必须与写死在
+脚本里的授权清单 `PaneSpaceENTITLEMENTS_KEYS` 一致——这个文件必须逐字符合该清单，
+签名又必须逐字符合这个文件，多一项也算失败。**理由见 §2b
 第三行：只验签的检查放行了一个根本启动不了的构建，所以 CI 里还要真的启动一次。**
 
 嵌套产物不受这条约束（它们不链接 `Sparkle.framework`，只加载系统框架），
