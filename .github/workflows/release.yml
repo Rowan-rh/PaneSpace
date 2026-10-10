@@ -28,10 +28,11 @@ concurrency:
 
 jobs:
   build:
-    # Only the tag push runs this half. The `release: published` trigger reuses
-    # this same file for the appcast job, and a release event carries no tag in
-    # GITHUB_REF_NAME -- deriving a version there would read the default
-    # branch's name instead. The publish job inherits this skip through `needs`.
+    # Only the tag push runs this half. Without the guard, publishing a draft
+    # would re-run the whole build and then re-upload its assets with
+    # --clobber onto a Release that is already public: a second signing run, and
+    # already-published zip/sig files silently replaced by newly built ones
+    # nobody has reviewed. The publish job inherits this skip through `needs`.
     if: github.event_name == 'push'
     runs-on: macos-26
     timeout-minutes: 45

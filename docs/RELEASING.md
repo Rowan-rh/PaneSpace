@@ -79,7 +79,17 @@ rm -rf ~/PaneSpace-signing
 
    **appcast 只在 Release 公开之后才发布。** draft 的附件对匿名访问返回 404，如果在打 tag 的那一次运行里就提交 appcast，从建 draft 到你点发布之间，所有已安装的用户都会看到更新横幅、点下去却下载失败；如果这个 draft 最后不发，appcast 还会一直推荐一个永远下不到的版本。draft 本身仍然挡住了自动发版：坏 tag 到不了这一步，必须有人先读过发行说明。
 
-   如果 `publish-appcast` job 失败（下载地址还不可达、Release 上没有 appcast.xml、prerelease 标记与 feed 不一致等），`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。修好原因后重新发布一次该 Release 即可。
+   **appcast 在 tag 推送时就生成好了，几天后才提交。** 为了让提交方知道这份快照是不是已经过期，build 会把它当时读到的 `appcast` 分支提交记到 `appcast-base.txt`（分支还不存在时记 `none`），一起作为附件上传。`publish-appcast` fetch 之后会比对：分支 HEAD 与记录不一致就报错退出，不会写入。场景是有两个 draft 同时挂着，先发布 B 再发布先打的 A，A 的快照里没有 B 的条目，整份覆盖就会把 B 从 feed 里抹掉。
+
+   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。按错误信息恢复：
+
+   | 报错 | 恢复步骤 |
+   | --- | --- |
+   | `The appcast branch is now at …, but this appcast was built on …` | 快照已过期。在 Actions 上找到这个 tag 的那次运行，Re-run all jobs（会按当前分支 HEAD 重新生成 appcast.xml 和 appcast-base.txt 并覆盖上传），再到 `release: published` 那次运行上 Re-run 这个 job。 |
+   | `The appcast branch does not exist, but this appcast was built on …` | 分支被删了。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
+   | `carries no appcast-base.txt` | 这个 Release 是旧版 workflow 建的，没有 base 附件。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
+   | `answered HTTP 404` | 刚公开时 CDN 可能短暂返回 404。重跑这个 job 即可；持续失败说明 Release 上的附件确实缺失，回上一条处理。 |
+   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。
 
 发布过程全在 CI 上完成，本机不生成 keychain，也不需要本地清理。
 
