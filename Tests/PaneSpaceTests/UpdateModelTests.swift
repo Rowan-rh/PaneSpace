@@ -1536,4 +1536,44 @@ final class UpdateModelTests: XCTestCase {
 
         XCTAssertEqual(model.skippedVersion, "30099")
     }
+
+    /// A leftover `skippedUpdateVersion` must not describe a skip the user did not make.
+    ///
+    /// Both keys are set when someone skipped on a build with no updater and later moved to one
+    /// with Sparkle. Only Sparkle's records the skip they would recognise; the other is history.
+    @MainActor
+    func testALeftoverFallbackKeyDoesNotShadowTheSkipSparkleRecorded() {
+        let defaults = makeDefaults()
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        defaults.set("30099", forKey: "SUSkippedVersion")
+
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertEqual(model.skippedVersion, "30099")
+    }
+
+    /// The same leftover key must not undo a skip made afterwards either.
+    ///
+    /// `skip` and `mirrorSkippedVersion` cached what Sparkle's keys hold; the observer read
+    /// PaneSpace's key first, saw the two disagree, and concluded the store had changed underneath
+    /// it -- then published the stale version over the one the user had just chosen.
+    @MainActor
+    func testSkippingWithALeftoverFallbackKeySurvivesTheObserver() async {
+        let defaults = makeDefaults()
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+    }
 }

@@ -202,8 +202,7 @@ final class UpdateModel: ObservableObject {
         // Sparkle writes its own skipped-version keys, and a skip made in its window persists across
         // launches, so both sources are read here. Reading only PaneSpace's key would restore a
         // banner for a version the user had already skipped in Sparkle.
-        let storedSkipped = defaults.string(forKey: Self.skippedVersionKey)
-            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        let storedSkipped = Self.storedSkippedVersion(in: defaults)
         // Read into locals first: a stored property cannot be read through `self` before every other
         // stored property is initialized.
         let storedAutomaticChecks = Self.readAutomaticChecks(from: defaults)
@@ -290,8 +289,7 @@ final class UpdateModel: ObservableObject {
         let automaticChecks = Self.readAutomaticChecks(from: defaults)
         let prereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
         // Both paths keep their skipped version in Sparkle's key, so one read serves both.
-        let skipped = defaults.string(forKey: Self.skippedVersionKey)
-            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        let skipped = Self.storedSkippedVersion(in: defaults)
 
         // Assigning the published properties is what routes the response. Each `didSet` writes the
         // value back and then performs exactly the cancellation or rescheduling a write through the
@@ -316,6 +314,23 @@ final class UpdateModel: ObservableObject {
         defaults.object(forKey: automaticallyChecksKey) == nil
             ? true
             : defaults.bool(forKey: automaticallyChecksKey)
+    }
+
+    /// The skipped version as the store holds it right now, from whichever key recorded it.
+    ///
+    /// One function, because the two channels record a skip under different keys and reading them
+    /// in different orders is exactly how the cache and the store drift apart. `skip` and
+    /// `mirrorSkippedVersion` looked only at Sparkle's keys while the observer looked at
+    /// PaneSpace's first: with a leftover `skippedUpdateVersion` the two disagreed, the observer
+    /// read that as the store changing underneath it, and it published a stale version over the
+    /// one the user had just chosen.
+    ///
+    /// Sparkle's keys win when both are present. They are the ones Sparkle itself compares against
+    /// on the next check, so a skip it recorded is the live one; `skippedUpdateVersion` is only
+    /// PaneSpace's own record for builds that had no updater at all, and it outlives them.
+    private static func storedSkippedVersion(in defaults: UserDefaults) -> String? {
+        SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+            ?? defaults.string(forKey: skippedVersionKey)
     }
 
     /// Whether this build can be compared with releases at all.
@@ -414,14 +429,14 @@ final class UpdateModel: ObservableObject {
             skippedVersion = offer.displayVersion
             // The cache holds what the store now holds, so the notification this write posts is
             // recognised as our own and does not come back as an external change.
-            observedSkippedVersion = SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+            observedSkippedVersion = Self.storedSkippedVersion(in: defaults)
             availableUpdate = nil
             return
         }
         skippedVersion = version
         defaults.set(version, forKey: Self.skippedVersionKey)
         // Kept in step with the store so the write above is not re-applied as an external change.
-        observedSkippedVersion = version
+        observedSkippedVersion = Self.storedSkippedVersion(in: defaults)
         clearIfShowing(version)
     }
 
@@ -505,7 +520,7 @@ final class UpdateModel: ObservableObject {
         // version handed over here. The store and the published property differ on purpose, so the
         // observer would otherwise see them as an external change and replace the display version
         // with the build number a moment later.
-        observedSkippedVersion = SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        observedSkippedVersion = Self.storedSkippedVersion(in: defaults)
         clearIfShowing(version)
     }
 
