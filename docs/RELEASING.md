@@ -36,7 +36,21 @@ gh secret set PANESPACE_CERT_P12_PASSWORD --repo Rowan-rh/PaneSpace \
   < ~/PaneSpace-signing/panespace-signing-pass.txt
 gh secret set PANESPACE_ED25519_PRIVATE_KEY --repo Rowan-rh/PaneSpace \
   < ~/PaneSpace-signing/ed25519-private-key.txt
+gh secret set PANESPACE_APPCAST_URL --repo Rowan-rh/PaneSpace \
+  --body "https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml"
 ```
+
+前三个来自上一步生成的目录；**第四个不是**，它是一个固定 URL：
+
+```text
+https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml
+```
+
+它指向 `appcast` 分支上的 `appcast.xml`——那是 `publish-appcast` job 写入的唯一一份
+feed，也是 `publish` job 作为 Release 附件上传的同一份文件。首次发布时这个分支
+还不存在，URL 先填好即可；分支建立之前任何一次检查更新都会失败，发布流程不会走到
+那一步。写成 secret 而不是常量是因为 URL 将来可能换载体（Pages、固定 tag 的资产），
+而换载体不应该需要改代码；发布 workflow 要求它以 `https://` 开头。
 
 注意 `base64 -i` 的参数是**文件名**，不能写成 `base64 -i < file`（那样会报 `option requires an argument -- i`）。
 
@@ -81,7 +95,25 @@ rm -rf ~/PaneSpace-signing
 
    **appcast 在 tag 推送时就生成好了，几天后才提交。** 为了让提交方知道这份快照是不是已经过期，build 会把它当时读到的 `appcast` 分支提交记到 `appcast-base.txt`（分支还不存在时记 `none`），一起作为附件上传。`publish-appcast` fetch 之后会比对：分支 HEAD 与记录不一致就报错退出，不会写入。场景是有两个 draft 同时挂着，先发布 B 再发布先打的 A，A 的快照里没有 B 的条目，整份覆盖就会把 B 从 feed 里抹掉。
 
-   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。按错误信息恢复：
+   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。
+
+   **重跑前先读这一条，它决定你该选哪个输入。** 上传用的是
+   `gh release upload --clobber`，也就是用新构建的 zip / sha256 / sig **替换** Release 上
+   已经公开的那一份。重新签名拿不回逐字节相同的产物，所以「先确认新旧一致再重跑」不是
+   麻烦，是根本做不到——不用去找这一步。
+
+   真正的问题在 feed，不在文件。这个版本的条目如果已经写进 `appcast` 分支，feed 里记的
+   还是**上一次**那个归档的 `ed25519` 签名和长度，而 Release 上的归档已经被换成了新的。
+   两边对不上，**所有 Sparkle 客户端验签失败**，在补跑 `publish-appcast` 之前谁都更新不了。
+
+   所以规则是：
+
+   - feed 里已经有这个版本 → **不要跑 `job: build`**，直接跑 `job: publish-appcast`。
+     它不碰 Release 上的资产。
+   - 已经跑了 `job: build` → **紧接着跑 `job: publish-appcast`**，把 feed 更新到新资产上。
+     中间这段时间越短越好。
+
+   按错误信息恢复：
 
    | 报错 | 恢复步骤 |
    | --- | --- |
@@ -89,7 +121,30 @@ rm -rf ~/PaneSpace-signing
    | `The appcast branch does not exist, but this appcast was built on …` | 分支被删了。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
    | `carries no appcast-base.txt` | 这个 Release 是旧版 workflow 建的，没有 base 附件。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
    | `answered HTTP 404` | 刚公开时 CDN 可能短暂返回 404。重跑这个 job 即可；持续失败说明 Release 上的附件确实缺失，回上一条处理。 |
-   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。
+   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。 |
+   | 重跑入口不见了（运行超过 30 天） | 用 workflow 的 **Run workflow** 手动补跑，见下。
+
+   ### 超过 30 天后的补跑入口
+
+   GitHub 只允许重跑 30 天内的工作流运行，更早的连 Re-run 按钮都没有。为此
+   `.github/workflows/release.yml` 开了 `workflow_dispatch`，**它只是上面这些恢复步骤的手动
+   入口，不新增任何自动发布路径**——只有人在 Actions 页面上点「Run workflow」才会触发，
+   跑的内容与对应的事件触发运行完全一样。
+
+   在 Actions 里打开 Release workflow → Run workflow，填两个输入：
+
+   | 输入 | 说明 |
+   | --- | --- |
+   | `job` | `build` 重新签名、打包并上传资产（`publish` job 会跟着跑）；`publish-appcast` 只重新提交 feed |
+   | `tag` | 要补跑的 tag，例如 `v0.2.0`，必须与 Release 上现有的 tag 完全一致 |
+
+   选 `job: build` 等价于当年的 Re-run all jobs，**同样带 `--clobber`**，先按上面那条规则
+   判断这个版本在 feed 里是不是已经有了。选 `job: publish-appcast` 是补跑那半边：重新
+   检查 Release 是否已公开、重新下载它携带的 appcast 和 base，再提交到 `appcast` 分支——
+   资产没被动过的情况下这就是该选的那个。
+
+   手动补跑不绕过任何检查：Release 必须是公开状态，feed 里这个 tag 的每个下载地址必须
+   当场返回 200，且 feed 的基线提交必须与 `appcast` 分支当前 HEAD 一致，否则照样报错退出。
 
 发布过程全在 CI 上完成，本机不生成 keychain，也不需要本地清理。
 
@@ -141,10 +196,40 @@ PANESPACE_VERSION=0.2.0 \
 PANESPACE_BUILD=20099 \
 PANESPACE_SIGN_IDENTITY="PaneSpace Self-Signed" \
 PANESPACE_ED_PUBLIC_KEY="$(cat scripts/update-public-ed25519.txt)" \
+PANESPACE_APPCAST_URL="https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml" \
 make app
 ```
 
+`PANESPACE_APPCAST_URL` 不能省：**设了 `PANESPACE_ED_PUBLIC_KEY` 的构建必须同时给出
+feed URL，否则 `scripts/build-app.sh` 直接报错退出。** 没有它就会产出一个带着公钥
+却没有 feed 的包——那种包在用户机器上每次检查更新都会失败，而且失败得毫无道理。
+本地想喂一个 `http://127.0.0.1` 的 appcast 做端到端验证时，可以额外设
+`PANESPACE_APPCAST_ALLOW_LOCALHOST=1`；它只放行 `127.0.0.1`，脚本会打印两行警告，
+而且**release workflow 明令禁止设置它**。
+
+那条本地 appcast 要用 Sparkle 官方的 `generate_appcast` 生成（命令见
+`docs/adr/0011-in-app-updates.md`）。用它时有一件事要知道：**即使传了 `--ed-key-file -`，
+它仍可能去读登录钥匙串里已有的 Sparkle 私钥，并为此弹一个钥匙串授权框。** appcast 照样
+能正常生成、签名也对，但那个框会留在屏幕上等你处理。独立验收时两次运行各留下一个这样的
+框，需要手动关掉。这只影响本地验证，CI 里没有这个问题——release workflow 走的是 headless
+runner，不存在交互的钥匙串。照实记录，未改动脚本。
+
 `PANESPACE_SIGN_KEYCHAIN` 可指定临时 keychain 路径；不设置时使用系统默认 keychain 搜索列表。
+
+打完的 bundle 可以直接跑打包后启动冒烟测试（会启动应用 10 秒，检查 Sparkle 已加载、
+无 dyld 报错、`DYLD_INSERT_LIBRARIES` 被忽略）：
+
+```bash
+./scripts/launch-smoke-test.sh
+```
+
+**最后一项要在本机跑才算数。** GitHub 托管的 `macos-26` runner 的 SIP 是关闭的，不执行
+hardened runtime 对 `DYLD_*` 的限制，所以脚本会检测到这一点、把这一项报成
+`skipped: this machine does not enforce hardened-runtime DYLD restrictions`。其余三项
+（存活、无 dyld 报错、Sparkle 已加载）在 CI 上仍然是硬性检查。发布前在本机
+（SIP enabled）跑一次，上面那行应当是 `Negative control: injection refused by hardened
+runtime, as expected`，最后一行是 `DYLD_INSERT_LIBRARIES is ignored`；出现 `skipped`
+就说明这台机器没有在执行这项限制，注入检查在这里等于没做。
 
 ## 为什么需要自签名证书
 
@@ -154,6 +239,22 @@ ad-hoc 签名的 designated requirement 等于 cdhash，即**每次构建都变*
 designated => identifier "org.panespace.app" and certificate root = H"..."
 ```
 
+自签名证书的叶子证书就是它自己的根——`generate-signing-identity.sh` 生成的证书
+`subject` 与 `issuer` 相同、链上只有这一张，所以它同时是叶子也是根，`codesign` 按根来
+写。这也是实测结果，不是推断：本机用该脚本生成的证书签名宿主、`Autoupdate` 和
+`Sparkle.framework`，三处都是
+
+```text
+designated => identifier … and certificate root = H"10c7ae58d8768c2880daa1669939c74b58736790"
+```
+
+上面那句 DR 里出现 `root` 还是 `leaf`，取决于同一张证书被归到哪一头，不是两种可以自选
+的写法。用真正的 CA 签发时通常是链上另有根、DR 写成 `anchor apple generic and certificate
+leaf = H"..."`；那种证书本机没有，这条未经实测，换 CA 时需要重新确认。
+
+（`docs/adr/0011-in-app-updates.md` 里记录的 `certificate leaf` 是早前用另一张开发证书
+测得的结果，与这里的脚本产物不是同一张证书，引用时注意区分。）
+
 发布 workflow 会在 designated requirement 里出现 `cdhash` 时直接失败，防止回归到 ad-hoc 状态。
 
 ## 已知限制
@@ -161,7 +262,6 @@ designated => identifier "org.panespace.app" and certificate root = H"..."
 - **未公证**：应用没有 Apple 公证票据。用户**首次安装**必须在「系统设置 › 隐私与安全性」中点「仍要打开」，或 Control-点按应用选择「打开」。这不是签名失效，是 Gatekeeper 的正常行为。
 - **从 0.1.2 升级需重新授权一次**：0.1.2 是 ad-hoc 签名且没有更新器，升级到第一个证书签名的版本时会重置一次授权，之后的更新保持不变。
 - **更换或过期证书需要重新授权**：所有已安装的 PaneSpace 都会失去信任，需要用户手动重新授权。因为签名用 `--timestamp=none`，签名没有可信时间戳，证书一旦过期签名就不再有效；10 年有效期到期前需要换发新证书并重新发布，**换证书本身就会让所有用户重新授权一次**。
-- **应用内更新尚未实现**：当前阶段只完成签名与发布自动化，检查更新与应用内更新是后续阶段的工作。
 
 ## 安全注意事项
 

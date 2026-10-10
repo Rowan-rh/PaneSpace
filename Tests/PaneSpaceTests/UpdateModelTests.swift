@@ -226,6 +226,30 @@ final class UpdateModelTests: XCTestCase {
         UpdateModel(feed: feed, clock: clock, defaults: defaults, currentVersion: currentVersion)
     }
 
+    /// A model that has an updater, which is what decides which key the skipped version is read
+    /// from. Without this the test runner is not an app bundle, so `canUseSparkle` is false and
+    /// every model here is on the fallback channel no matter which keys the test sets.
+    @MainActor
+    private func makeSparkleModel(
+        feed: StubUpdateFeed,
+        clock: StubUpdateClock = StubUpdateClock(),
+        defaults: UserDefaults,
+        currentVersion: SemanticVersion? = SemanticVersion(string: "0.1.0")
+    ) -> UpdateModel {
+        let delegate = SparkleUpdateDelegate()
+        return UpdateModel(
+            feed: feed,
+            clock: clock,
+            defaults: defaults,
+            currentVersion: currentVersion,
+            updaterController: SPUStandardUpdaterController(
+                startingUpdater: false,
+                updaterDelegate: delegate,
+                userDriverDelegate: delegate
+            )
+        )
+    }
+
     /// Waits for an asynchronous condition instead of guessing a fixed delay.
     @MainActor
     private func waitUntil(
@@ -247,6 +271,19 @@ final class UpdateModelTests: XCTestCase {
     @MainActor
     private func settle() async {
         try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    /// Lets the `UserDefaults` observer's response to a write actually run.
+    ///
+    /// A write to the store posts `didChangeNotification`, and the model answers it from a
+    /// `Task { @MainActor }` — so the response lands a turn or more after the write, and a test that
+    /// asserts immediately after calling into the model has not exercised it at all. Waiting on a
+    /// condition is not an option either: the value this guards is the one the buggy response
+    /// replaces, so it would never arrive and the wait would fail instead of the assertion.
+    @MainActor
+    private func waitForDefaultsObserver() async {
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(200))
     }
 
     /// Waits for something to be released, rather than checking once and hoping a deinit has run.
@@ -724,6 +761,18 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertEqual(manualResult, .failed(.cancelled), "The caller is told its check was replaced.")
         XCTAssertNil(model.lastManualResult, "A cancelled manual check publishes nothing.")
 
+        // Waited for, not read. The recheck is a separate Task that restateSchedule() created on the
+        // MainActor when the channel switched; nothing in the two awaits above guarantees it has run
+        // by the time the manual caller resumes, and both are competing for the same actor. Reading
+        // the count directly therefore raced that Task -- it saw 2 and failed roughly one run in
+        // thirty on this machine, under no code change at all. What is under test is that the new
+        // channel is asked once, not how quickly; "once" is checked by the settled count, and a
+        // fourth request would still fail this after the wait.
+        await waitUntil { await feed.requestCount >= 3 }
+        // Let anything still in flight land before counting. `waitUntil` returns the moment it first
+        // sees 3, so a duplicate request arriving a few milliseconds later would go unnoticed; the
+        // old direct read had the same blind spot, and this is what closes it.
+        await settle()
         let requests = await feed.requestCount
         XCTAssertEqual(requests, 3, "The new channel is asked once, for everyone.")
 
@@ -1197,7 +1246,7 @@ final class UpdateModelTests: XCTestCase {
     @MainActor
     func testSkippingASparkleOfferWritesTheKeySparkleReads() {
         let defaults = makeDefaults()
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
         let offer = SparkleUpdateOffer(
             displayVersion: "0.3.0",
             versionString: "30099",
@@ -1215,6 +1264,109 @@ final class UpdateModelTests: XCTestCase {
     }
 
     @MainActor
+    func testSkippingASparkleOfferPublishesTheVersionTheUserSees() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
+
+        // The build number belongs in the key Sparkle reads, not in the value Settings renders
+        // and `matchesSkippedVersion` compares — "Skipped version: 30099" is not something anyone
+        // recognises as a version. Writing that build number to the store above posts a defaults
+        // notification, and the model's answer to it used to compare the stored build number with
+        // the published display version, see them differ, and put "30099" back into Settings a
+        // moment later. So this has to be read after the observer has run, not right after the
+        // call.
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+    }
+
+    @MainActor
+    func testMirroringASkipPublishesTheVersionTheUserSees() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        // A skip made in Sparkle's own window reaches the model through the delegate, which used to
+        // hand over `versionString`. Compared against the display version, a build number misses on
+        // both counts: Settings shows it, and `clearIfShowing` cannot match the banner it just hid.
+        // What the delegate hands over is the display version, and the build number comes with it.
+        //
+        // Written in Sparkle's order, which is what acceptance 4b walked into: the delegate is
+        // called first (`SPUUIBasedUpdateDriver.m:257`) and the skip is recorded afterwards (`:283`).
+        // Writing the store line first, as this used to, modelled an order Sparkle never uses and
+        // hid the bug.
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+        XCTAssertNil(model.availableUpdate, "The banner must go when the version on it was skipped.")
+    }
+
+    /// The Sparkle-window skip has to survive the write that follows it, and the next launch.
+    ///
+    /// Acceptance saw this on screen: skipping inside Sparkle's own window showed `30099`
+    /// immediately and still after a restart, while the same skip from PaneSpace's banner worked.
+    /// The difference is the order — the model runs before Sparkle records anything.
+    @MainActor
+    func testAMirroredSkipSurvivesTheWriteThatFollowsIt() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
+        // Sparkle records the skip after the delegate returns.
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0", "The session must not drift to the build.")
+
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(relaunched.skippedVersion, "0.3.0", "And neither must the next launch.")
+    }
+
+    /// A previous skip still on record must not be paired with this skip's display version.
+    ///
+    /// Reading the store for the build at delegate time picks up the *previous* build whenever one
+    /// is still there, which records a pair no `SUSkippedVersion` will ever match — the display
+    /// version is then written for nothing and the build number is shown after a restart.
+    @MainActor
+    func testAMirroredSkipIsNotPairedWithAPreviousBuild() async {
+        let defaults = makeDefaults()
+        // What the last launch left behind.
+        defaults.set("20000", forKey: "SUSkippedVersion")
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.mirrorSkippedVersion("0.3.0", buildNumber: "30099")
+        defaults.set("30099", forKey: "SUSkippedVersion")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(
+            relaunched.skippedVersion,
+            "0.3.0",
+            "The pair has to be this skip's build, not the one it replaced."
+        )
+    }
+
+    @MainActor
     func testAFinishedSparkleCycleEndsTheCheckingState() {
         let defaults = makeDefaults()
         let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
@@ -1227,10 +1379,15 @@ final class UpdateModelTests: XCTestCase {
             )
         )
 
+        // A nil ending, which is what this scenario is: an update was found and the cycle closed
+        // without installing it. Sparkle's own words for a dismissed or skipped update are "the
+        // same as no error", so nil here is not a stand-in for "found nothing" — 1001 is, and
+        // `testNoUpdateIsASuccessfulManualCheck` is the case for it. Asserting `.upToDate` for this
+        // sequence was 3b's bug in its second form: the banner offers 0.3.0 on the next line.
         model.finishSparkleCycle(updateCheck: .updates, error: nil)
 
         XCTAssertFalse(model.isChecking)
-        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNil(model.lastManualResult)
         XCTAssertNotNil(model.lastCheckDate)
         // The offer survives: the check completed and found it, so clearing it here would make a
         // found update disappear at the moment it was confirmed.
@@ -1293,14 +1450,484 @@ final class UpdateModelTests: XCTestCase {
         XCTAssertEqual(UpdateModel.mapSparkleError(Transport()), .unreachable)
     }
 
+    // MARK: Sparkle's own endings of a cycle
+
+    /// Builds the error object Sparkle would hand back for one of its codes.
+    @MainActor
+    private func sparkleError(_ code: SUError) -> NSError {
+        NSError(domain: SUSparkleErrorDomain, code: Int(code.rawValue))
+    }
+
+    @MainActor
+    func testNoUpdateIsASuccessfulManualCheck() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+
+        // "Nothing newer" is the answer to the question the user asked. Reporting
+        // it as a failure told them the update server could not be reached, and
+        // offered a retry for something that had already succeeded.
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertFalse(model.isChecking)
+        XCTAssertNotNil(model.lastCheckDate)
+    }
+
+    @MainActor
+    func testNoUpdateIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.noUpdateError)
+        )
+
+        // A scheduled check that finds nothing is the common case, not an error
+        // worth surfacing a retry for.
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    @MainActor
+    func testACancelledInstallationIsNotAFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        // The user cancelled when asked to authorize the install. An update exists
+        // and was not installed, so `.upToDate` would be a lie -- it says there is
+        // nothing to install. Settings falls back to "Last checked <time>", which
+        // claims nothing.
+        XCTAssertNil(model.lastManualResult)
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertFalse(model.isChecking)
+        XCTAssertNotNil(model.lastCheckDate)
+    }
+
+    @MainActor
+    func testAuthorizingLaterIsTreatedLikeCancelling() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // Sparkle groups 4008 with the two ordinary endings it does not even log
+        // (SPUUpdater.m:798). It used to be mapped to `.unreachable`, which made
+        // a beta user who said "not now" see a failed check.
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationAuthorizeLaterError)
+        )
+
+        XCTAssertNil(model.lastManualResult)
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testDecliningTheInstallKeepsThePreviousManualResult() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.appcastError))
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        // Keeping the previous value is the whole point: the new check answers
+        // nothing, so overwriting whatever was there -- with `.upToDate` or with a
+        // failure -- would be inventing an answer.
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+        // A previous failure is still cleared: this check itself did not fail.
+        XCTAssertNil(model.lastAutomaticFailure)
+    }
+
+    @MainActor
+    func testACancelledInstallationIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.installationCanceledError)
+        )
+
+        XCTAssertNil(model.lastAutomaticFailure)
+        // A scheduled check never publishes a manual result in the first place.
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    @MainActor
+    func testAuthorizingLaterIsNotAScheduledFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(
+            updateCheck: .updatesInBackground,
+            error: sparkleError(.installationAuthorizeLaterError)
+        )
+
+        XCTAssertNil(model.lastAutomaticFailure)
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    @MainActor
+    func testOtherSparkleErrorsAreStillFailures() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.appcastError))
+
+        // Only the endings of a completed cycle are reclassified. A feed that
+        // cannot be parsed is still a failure, or the retry the UI offers would
+        // never appear for the problem it was written for.
+        XCTAssertEqual(model.lastManualResult, .failed(.invalidResponse))
+
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: sparkleError(.installationError)
+        )
+
+        XCTAssertEqual(model.lastManualResult, .failed(.unreachable))
+    }
+
+    @MainActor
+    func testAnErrorFromAnotherDomainIsStillAFailure() {
+        let defaults = makeDefaults()
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        // Same code, different domain: this is somebody else's error that happens
+        // to reuse the number, and it is not Sparkle saying "no update".
+        let impostor = NSError(domain: "example.other", code: Int(SUError.noUpdateError.rawValue))
+
+        model.finishSparkleCycle(updateCheck: .updates, error: impostor)
+
+        XCTAssertEqual(model.lastManualResult, .failed(.unreachable))
+    }
+
     @MainActor
     func testTheSkippedVersionIsReadFromSparklesKeyToo() {
         let defaults = makeDefaults()
         // Sparkle writes the skip itself, into its own key. The model has to notice that, or a skip
-        // made in Sparkle's window would leave the banner up.
+        // made in Sparkle's window would leave the banner up. It needs an updater: a build with no
+        // updater compares display versions, not Sparkle's build numbers, so ignoring that key is
+        // correct there rather than a miss.
         defaults.set("30099", forKey: "SUSkippedVersion")
-        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
 
         XCTAssertEqual(model.skippedVersion, "30099")
+    }
+
+    /// A leftover `skippedUpdateVersion` must not describe a skip the user did not make.
+    ///
+    /// Both keys are set when someone skipped on a build with no updater and later moved to one
+    /// with Sparkle. Only Sparkle's records the skip they would recognise; the other is history.
+    ///
+    /// The model has an updater on purpose: which key a skip is read from depends on the channel
+    /// the model is actually on, and a test runner is never on the Sparkle one by accident.
+    @MainActor
+    func testALeftoverFallbackKeyDoesNotShadowTheSkipSparkleRecorded() {
+        let defaults = makeDefaults()
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        defaults.set("30099", forKey: "SUSkippedVersion")
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertEqual(model.skippedVersion, "30099")
+    }
+
+    /// The mirror image: a leftover Sparkle key must not cost a build with no updater its own skip.
+    ///
+    /// The fallback channel compares display versions and Sparkle compares build numbers, so
+    /// neither engine can honour the other channel's key. Reading across lost the skip on the next
+    /// launch and put the same version back on the banner.
+    @MainActor
+    func testAFallbackSkipSurvivesALeftoverSparkleKey() {
+        let defaults = makeDefaults()
+        // Left by a build that did have an updater; this one has none.
+        defaults.set("30099", forKey: "SUSkippedVersion")
+
+        let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertFalse(model.usesSparkle, "This is the channel under test.")
+        model.skip(version: "0.4.0")
+        XCTAssertEqual(model.skippedVersion, "0.4.0")
+
+        // A second model over the same store is the next launch.
+        let relaunched = makeModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(relaunched.skippedVersion, "0.4.0")
+    }
+
+    /// The same leftover key must not undo a skip made afterwards either.
+    ///
+    /// `skip` and `mirrorSkippedVersion` cached what Sparkle's keys hold; the observer read
+    /// PaneSpace's key first, saw the two disagree, and concluded the store had changed underneath
+    /// it -- then published the stale version over the one the user had just chosen.
+    @MainActor
+    func testSkippingWithALeftoverFallbackKeySurvivesTheObserver() async {
+        let defaults = makeDefaults()
+        defaults.set("0.2.0", forKey: UpdateModel.skippedVersionKey)
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+    }
+
+    /// Settings must still name a version the user recognises after a relaunch.
+    ///
+    /// Sparkle records the build number because that is what it compares, so the display version is
+    /// not in any key it writes. Without a record of its own the relaunch could only put the build
+    /// number back on screen, and "Skipped version: 30099" is not a version anyone asked to skip.
+    @MainActor
+    func testADisplayVersionSurvivesARelaunch() async {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+
+        model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
+        XCTAssertEqual(model.skippedVersion, "0.3.0", "The session already had this right.")
+
+        // A second model over the same store is the next launch.
+        let relaunched = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+        XCTAssertEqual(
+            relaunched.skippedVersion,
+            "0.3.0",
+            "after relaunch Settings must still show the display version"
+        )
+    }
+
+    /// A display version left beside a build number that is no longer skipped is not an answer.
+    ///
+    /// Sparkle owns `SUSkippedVersion` and rewrites it without PaneSpace hearing about it. A pair
+    /// written for an earlier skip must not be shown as the current one.
+    ///
+    /// The key names are spelled out rather than taken from `UpdateModel`, because the point is
+    /// that what is on disk keeps answering the question after the code that wrote it is gone.
+    @MainActor
+    func testADisplayVersionForAnotherBuildIsNotShown() {
+        let defaults = makeDefaults()
+        defaults.set("30099", forKey: "skippedSparkleBuild")
+        defaults.set("0.3.0", forKey: "skippedSparkleDisplayVersion")
+        // A different skip is the live one.
+        defaults.set("40000", forKey: "SUSkippedVersion")
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertEqual(
+            model.skippedVersion,
+            "40000",
+            "A record for another build describes a skip that was replaced."
+        )
+    }
+
+    /// The same record is stale once the skip is gone, which Sparkle does on its own when the
+    /// installed version reaches what was skipped.
+    @MainActor
+    func testADisplayVersionForAClearedSkipIsNotShown() {
+        let defaults = makeDefaults()
+        defaults.set("30099", forKey: "skippedSparkleBuild")
+        defaults.set("0.3.0", forKey: "skippedSparkleDisplayVersion")
+        // Nothing skipped any more: Sparkle cleared its key, the pair outlives it.
+
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        XCTAssertNil(model.skippedVersion, "There is no skip to name.")
+    }
+
+    /// Dismissing the install prompt must not leave the previous check's answer on screen.
+    ///
+    /// The sequence is the one acceptance walked through: a manual check reports "up to date", an
+    /// update turns up afterwards, and the user declines at the authorization prompt. The banner is
+    /// still offering 0.3.0 at that moment, so "PaneSpace is up to date" is no longer true of
+    /// anything, and Settings cannot show both.
+    @MainActor
+    func testDecliningAnInstallRetiresAnEarlierUpToDateResult() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // A manual check that found nothing: 1001 is how Sparkle says exactly that.
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The update turns up later.
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+        // And the user declines at the authorization prompt.
+        model.finishSparkleCycle(
+            updateCheck: .updates,
+            error: NSError(
+                domain: SUSparkleErrorDomain,
+                code: Int(SUError.installationCanceledError.rawValue)
+            )
+        )
+
+        XCTAssertEqual(model.availableUpdate?.displayVersion, "0.3.0", "The offer is still live.")
+        XCTAssertNil(
+            model.lastManualResult,
+            "A banner offering 0.3.0 and 'PaneSpace is up to date' cannot both stand."
+        )
+    }
+
+    /// The same retirement when the update is announced without an offer to publish yet.
+    ///
+    /// Sparkle reports the finding first and hands over the offer afterwards, so the answer has to
+    /// go at the moment the finding arrives rather than when the banner appears.
+    @MainActor
+    func testFindingAnUpdateRetiresAnEarlierUpToDateResult() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        model.noteSparkleFoundUpdate()
+
+        XCTAssertNil(model.lastManualResult)
+    }
+
+    /// The fallback channel retires it too, and can say what it found instead of going blank.
+    ///
+    /// A scheduled check that turns up a release makes an earlier manual `.upToDate` stale in the
+    /// same way, and here the release itself is available, so the answer is the one that says so.
+    @MainActor
+    func testAScheduledCheckRetiresAnEarlierUpToDateResult() async {
+        let feed = StubUpdateFeed()
+        let clock = StubUpdateClock()
+        clock.holdSleeps()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, clock: clock, defaults: defaults)
+        await feed.enqueue(.success(nil))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The scheduled check, which finds a release the manual one did not know about.
+        let later = makeRelease("0.3.0")
+        await feed.enqueue(.success(later))
+        model.start()
+        await waitUntil { await feed.requestCount >= 2 }
+        await settle()
+
+        XCTAssertEqual(model.availableUpdate?.displayVersion, "0.3.0")
+        XCTAssertEqual(
+            model.lastManualResult,
+            .available(later),
+            "A release is available, so the answer says so instead of 'up to date'."
+        )
+    }
+
+    /// "Remind me later" must not be reported as "PaneSpace is up to date".
+    ///
+    /// This is the same promise 3b makes, reached by the other way a Sparkle window closes. The
+    /// banner shows 0.3.0, the user picks "Remind Me Later", Sparkle ends the update session and
+    /// then ends the cycle — with `error == nil`, because the header calls a dismissed or skipped
+    /// update "the same as no error". Only `SUNoUpdateError` (1001) means the check found nothing,
+    /// so only 1001 may write `.upToDate`.
+    @MainActor
+    func testDismissingAnUpdateIsNotReportedAsUpToDate() {
+        let defaults = makeDefaults()
+        let model = makeSparkleModel(feed: StubUpdateFeed(), defaults: defaults)
+
+        // A manual check that found nothing, so there is a `.upToDate` left to be contradicted.
+        model.finishSparkleCycle(updateCheck: .updates, error: sparkleError(.noUpdateError))
+        XCTAssertEqual(model.lastManualResult, .upToDate)
+
+        // The user then asked to install it, Sparkle found it, and the window was dismissed.
+        model.presentSparkleOffer(
+            SparkleUpdateOffer(
+                displayVersion: "0.3.0",
+                versionString: "30099",
+                releaseNotesURL: nil,
+                isFromPrereleaseChannel: false
+            )
+        )
+        model.endSparkleUpdateSession()
+        model.finishSparkleCycle(updateCheck: .updates, error: nil)
+
+        XCTAssertNotEqual(
+            model.lastManualResult,
+            .upToDate,
+            "An update was found and dismissed; the app is not up to date."
+        )
+        XCTAssertNil(model.lastManualResult, "Settings falls back to the time of the last check.")
+    }
+
+    /// Skipping a version has to take its "available" answer with it.
+    ///
+    /// The fallback channel keeps the release in `lastManualResult`, so after a skip Settings could
+    /// read "0.3.0 is available" above "Skipped version: 0.3.0" — the same one version described
+    /// both ways. Clearing is the same retirement 3b does when an update is found, for the same
+    /// reason: a line of Settings that contradicts another is worse than no line.
+    @MainActor
+    func testSkippingAReleaseRetiresItsAvailableResult() async {
+        let feed = StubUpdateFeed()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+        let release = makeRelease("0.3.0")
+        await feed.enqueue(.success(release))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .available(release))
+
+        model.skip(version: "0.3.0")
+
+        XCTAssertEqual(model.skippedVersion, "0.3.0")
+        XCTAssertNil(
+            model.lastManualResult,
+            "The version is available and skipped at once."
+        )
+        XCTAssertNil(model.availableUpdate, "The banner goes with it.")
+    }
+
+    /// Only the version that was skipped is retired.
+    ///
+    /// A different version's answer is still true, and blanking it would throw away the one line
+    /// telling the user there is something to install.
+    @MainActor
+    func testSkippingOneReleaseKeepsAnotherAvailableResult() async {
+        let feed = StubUpdateFeed()
+        let defaults = makeDefaults()
+        let model = makeModel(feed: feed, defaults: defaults)
+        await feed.enqueue(.success(makeRelease("0.3.0")))
+        await model.checkNow()
+        // A later check turns up something newer, which is still offered.
+        let newer = makeRelease("0.4.0")
+        await feed.enqueue(.success(newer))
+        await model.checkNow()
+        XCTAssertEqual(model.lastManualResult, .available(newer))
+
+        model.skip(version: "0.3.0")
+
+        XCTAssertEqual(
+            model.lastManualResult,
+            .available(newer),
+            "0.4.0 is not the version that was skipped."
+        )
     }
 }
