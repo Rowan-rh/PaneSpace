@@ -249,6 +249,19 @@ final class UpdateModelTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(60))
     }
 
+    /// Lets the `UserDefaults` observer's response to a write actually run.
+    ///
+    /// A write to the store posts `didChangeNotification`, and the model answers it from a
+    /// `Task { @MainActor }` — so the response lands a turn or more after the write, and a test that
+    /// asserts immediately after calling into the model has not exercised it at all. Waiting on a
+    /// condition is not an option either: the value this guards is the one the buggy response
+    /// replaces, so it would never arrive and the wait would fail instead of the assertion.
+    @MainActor
+    private func waitForDefaultsObserver() async {
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(200))
+    }
+
     /// Waits for something to be released, rather than checking once and hoping a deinit has run.
     @MainActor
     private func waitUntilReleased(_ reference: () -> AnyObject?, timeout: TimeInterval = 5) async {
@@ -1215,7 +1228,7 @@ final class UpdateModelTests: XCTestCase {
     }
 
     @MainActor
-    func testSkippingASparkleOfferPublishesTheVersionTheUserSees() {
+    func testSkippingASparkleOfferPublishesTheVersionTheUserSees() async {
         let defaults = makeDefaults()
         let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
         model.presentSparkleOffer(
@@ -1228,15 +1241,20 @@ final class UpdateModelTests: XCTestCase {
         )
 
         model.skip(version: "0.3.0")
+        await waitForDefaultsObserver()
 
         // The build number belongs in the key Sparkle reads, not in the value Settings renders
         // and `matchesSkippedVersion` compares — "Skipped version: 30099" is not something anyone
-        // recognises as a version.
+        // recognises as a version. Writing that build number to the store above posts a defaults
+        // notification, and the model's answer to it used to compare the stored build number with
+        // the published display version, see them differ, and put "30099" back into Settings a
+        // moment later. So this has to be read after the observer has run, not right after the
+        // call.
         XCTAssertEqual(model.skippedVersion, "0.3.0")
     }
 
     @MainActor
-    func testMirroringASkipPublishesTheVersionTheUserSees() {
+    func testMirroringASkipPublishesTheVersionTheUserSees() async {
         let defaults = makeDefaults()
         let model = makeModel(feed: StubUpdateFeed(), defaults: defaults)
         model.presentSparkleOffer(
@@ -1251,7 +1269,11 @@ final class UpdateModelTests: XCTestCase {
         // A skip made in Sparkle's own window reaches the model through the delegate, which used to
         // hand over `versionString`. Compared against the display version, a build number misses on
         // both counts: Settings shows it, and `clearIfShowing` cannot match the banner it just hid.
+        // What the delegate hands over is the display version, and the build number is already in
+        // the store under it — exactly as it is when Sparkle writes the skip itself.
+        defaults.set("30099", forKey: "SUSkippedVersion")
         model.mirrorSkippedVersion("0.3.0")
+        await waitForDefaultsObserver()
 
         XCTAssertEqual(model.skippedVersion, "0.3.0")
         XCTAssertNil(model.availableUpdate, "The banner must go when the version on it was skipped.")

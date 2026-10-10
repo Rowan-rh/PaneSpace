@@ -111,12 +111,17 @@ final class UpdateModel: ObservableObject {
     private let logger = Logger(subsystem: "org.panespace.app", category: "update")
     /// Kept alive for as long as this model observes preferences.
     private var defaultsObservation: NSObjectProtocol?
-    /// The skipped version this model last reacted to.
+    /// The skipped version as the *store* holds it, the last time the model looked.
     ///
     /// `UserDefaults` posts one notification for any change, so the cached value is what tells a
-    /// write to the skipped-version key apart from an unrelated write in the same process. The two
-    /// booleans need no cache of their own: comparing against the published properties is the same
-    /// test, and a `didSet` is what keeps that comparison honest.
+    /// write to the skipped-version key apart from an unrelated write in the same process. It holds
+    /// the store's own value, never the published one, and those two are deliberately different on
+    /// the Sparkle path: the store carries the build number Sparkle compares, while `skippedVersion`
+    /// carries the display version the user reads. Comparing the incoming store value against the
+    /// published display version made the two look like an external change on every notification,
+    /// and the model answered by writing the build number back into what Settings renders.
+    /// The two booleans need no cache of their own: comparing against the published properties is
+    /// the same test, and a `didSet` is what keeps that comparison honest.
     private var observedSkippedVersion: String?
     /// The controller that owns the updater, or nil in a build that cannot ask one.
     private let updaterController: SPUStandardUpdaterController?
@@ -291,12 +296,14 @@ final class UpdateModel: ObservableObject {
         // Assigning the published properties is what routes the response. Each `didSet` writes the
         // value back and then performs exactly the cancellation or rescheduling a write through the
         // model would have performed, so there is one response path rather than two that can drift
-        // apart. The comparison is against the published value rather than a separate cache, so the
-        // value and the response to it cannot disagree.
+        // apart. The skipped version is compared against the cached *store* value rather than the
+        // published one, because on the Sparkle path the two differ on purpose; comparing against
+        // the published value made every notification look like a change and put the build number
+        // back into what Settings renders.
         if prereleases != includesPrereleases {
             includesPrereleases = prereleases
         }
-        if skipped != skippedVersion {
+        if skipped != observedSkippedVersion {
             observedSkippedVersion = skipped
             skippedVersion = skipped
         }
@@ -405,6 +412,9 @@ final class UpdateModel: ObservableObject {
             // `matchesSkippedVersion` compares. Writing the build number into the published value
             // put "30099" in Settings and made `clearIfShowing` miss the banner it had just hidden.
             skippedVersion = offer.displayVersion
+            // The cache holds what the store now holds, so the notification this write posts is
+            // recognised as our own and does not come back as an external change.
+            observedSkippedVersion = SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
             availableUpdate = nil
             return
         }
@@ -491,10 +501,11 @@ final class UpdateModel: ObservableObject {
     func mirrorSkippedVersion(_ version: String?) {
         guard let version else { return }
         skippedVersion = version
-        // `skippedVersion` is published rather than `private(set)`-assigned here, so the write is
-        // the one place the published state changes; the cache stops the defaults observer from
-        // re-applying the same value as an external change.
-        observedSkippedVersion = version
+        // The cache holds the store's value — the build number Sparkle wrote — not the display
+        // version handed over here. The store and the published property differ on purpose, so the
+        // observer would otherwise see them as an external change and replace the display version
+        // with the build number a moment later.
+        observedSkippedVersion = SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
         clearIfShowing(version)
     }
 
