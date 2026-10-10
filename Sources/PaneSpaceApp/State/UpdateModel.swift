@@ -1,0 +1,707 @@
+import AppKit
+import Foundation
+import OSLog
+import Sparkle
+
+/// The result of a check the user explicitly asked for.
+///
+/// A scheduled check reports nothing: an update that cannot be fetched is not worth interrupting
+/// anyone over, so a failure there is only logged.
+enum UpdateCheckResult: Equatable, Sendable {
+    case upToDate
+    case available(ReleaseInfo)
+    case failed(UpdateFeedError)
+
+    var failure: UpdateFeedError? {
+        guard case .failed(let error) = self else { return nil }
+        return error
+    }
+}
+
+/// What the update banner needs to know, whichever source produced it.
+///
+/// Two sources reach the same banner and they describe an update differently: Sparkle's appcast
+/// item and stage 2's GitHub release. This is the one shape both are translated into, so the
+/// banner never branches on where the update came from.
+enum AvailableUpdate: Equatable, Sendable {
+    /// An update Sparkle found and is prepared to install.
+    case sparkle(SparkleUpdateOffer)
+    /// An update found by the stage-2 GitHub feed, in a build with no appcast to ask.
+    case release(ReleaseInfo)
+
+    /// The version to show the user.
+    var displayVersion: String {
+        switch self {
+        case .sparkle(let offer): return offer.displayVersion
+        case .release(let release): return release.displayVersion
+        }
+    }
+
+    /// Where the user can read about the release, if anywhere.
+    var releaseNotesURL: URL? {
+        switch self {
+        case .sparkle(let offer): return offer.releaseNotesURL
+        case .release(let release): return release.releasePageURL
+        }
+    }
+
+    /// Whether the update is a pre-release, for a label on the banner.
+    var isPrerelease: Bool {
+        switch self {
+        case .sparkle(let offer): return offer.isPrerelease
+        case .release(let release): return release.isPrerelease
+        }
+    }
+
+    /// Whether this is the version the user chose to ignore.
+    func matchesSkippedVersion(_ version: String?) -> Bool {
+        guard let version else { return false }
+        return displayVersion == version
+    }
+}
+
+/// Owns update state: whether a newer release exists, when the last check ran, and what the banner
+/// should offer.
+///
+/// **This is a UI state adapter, not the update engine.** Sparkle fetches the appcast, compares
+/// versions, filters channels, downloads, verifies and installs; this type translates the callbacks
+/// it makes into state a banner can render, and passes the user's intent back. It deliberately keeps
+/// no second copy of the answer: a version compared here and a version installed by Sparkle could
+/// disagree, and the user would be shown one and given another.
+///
+/// The stage-2 feed survives as the fallback for a build with no appcast to ask — see `usesSparkle`.
+/// Its own tests still cover that path in full.
+@MainActor
+final class UpdateModel: ObservableObject {
+    /// How often a scheduled check runs.
+    static let checkInterval: TimeInterval = 24 * 60 * 60
+
+    static let automaticallyChecksKey = UpdatePreferences.automaticChecksKey
+    static let includesPrereleasesKey = UpdatePreferences.includesPrereleasesKey
+    /// Retained for the stage-2 path, which still skips versions itself. Sparkle keeps its skipped
+    /// version in `SUSkippedVersion`; `skip(version:)` only writes this key on that path.
+    static let skippedVersionKey = "skippedUpdateVersion"
+
+    /// The newest release worth showing, or nil when there is nothing to show.
+    @Published private(set) var availableUpdate: AvailableUpdate?
+    @Published private(set) var isChecking = false
+    /// When the last check finished, whether it succeeded or not.
+    @Published private(set) var lastCheckDate: Date?
+    /// The outcome of the last check the user asked for; nil until there has been one.
+    @Published private(set) var lastManualResult: UpdateCheckResult?
+    /// The version the user chose not to hear about again.
+    @Published private(set) var skippedVersion: String?
+    /// Why the last scheduled check failed, so the UI can offer a retry without a modal.
+    @Published private(set) var lastAutomaticFailure: UpdateFeedError?
+
+    private let feed: any UpdateFeed
+    private let clock: any UpdateClock
+    private let defaults: UserDefaults
+    private let currentVersion: SemanticVersion?
+    private let logger = Logger(subsystem: "org.panespace.app", category: "update")
+    /// Kept alive for as long as this model observes preferences.
+    private var defaultsObservation: NSObjectProtocol?
+    /// The skipped version this model last reacted to.
+    ///
+    /// `UserDefaults` posts one notification for any change, so the cached value is what tells a
+    /// write to the skipped-version key apart from an unrelated write in the same process. The two
+    /// booleans need no cache of their own: comparing against the published properties is the same
+    /// test, and a `didSet` is what keeps that comparison honest.
+    private var observedSkippedVersion: String?
+    /// The controller that owns the updater, or nil in a build that cannot ask one.
+    private let updaterController: SPUStandardUpdaterController?
+    /// The delegate Sparkle calls back. Held here because Sparkle references it weakly.
+    private var sparkleDelegate: SparkleUpdateDelegate?
+
+    private var checkTask: Task<CheckOutcome, Never>?
+    private var scheduleTask: Task<Void, Never>?
+    /// Keeps a second `start()` from running a second schedule.
+    private var hasStarted = false
+    /// Counts the checks this model has started.
+    ///
+    /// A check that has been superseded still runs to completion before its caller resumes, and it
+    /// must not touch shared state on the way out. The generation identifies which check owns the
+    /// model, so a returning check only clears `checkTask` and `isChecking` when it is still the
+    /// current one, and never publishes a result at all once superseded.
+    private var checkGeneration = 0
+    /// Cancels the running check and marks everything in flight as superseded.
+    private func supersedeRunningCheck() {
+        checkGeneration += 1
+        checkTask?.cancel()
+        checkTask = nil
+        // Nothing is running under the new generation yet, and the check that was running is on its
+        // way out. Clearing this here is what stops a superseded check from leaving `isChecking` true
+        // forever: the replacement sets it again on its way in.
+        isChecking = false
+    }
+
+    private enum CheckOutcome {
+        /// A finished check. The release is nil when the feed has nothing published.
+        case completed(ReleaseInfo?)
+        case failed(UpdateFeedError)
+        case cancelled
+    }
+
+    init(
+        feed: any UpdateFeed = GitHubReleaseFeed(),
+        clock: any UpdateClock = SystemUpdateClock(),
+        defaults: UserDefaults = .standard,
+        currentVersion: SemanticVersion? = AppVersion.current,
+        updaterController: SPUStandardUpdaterController? = nil
+    ) {
+        // The carry-over from the stage-2 key has to happen here, before anything
+        // below reads the preference, and not in `applicationDidFinishLaunching`:
+        // `@StateObject` builds this model before that callback runs, so a
+        // migration there would arrive after the read below and leave the model
+        // holding the default ("checks on") until the defaults notification
+        // corrected it. `start()` could run first, and a user who had turned
+        // automatic checks off in stage 2 would get one check they had declined.
+        //
+        // It is idempotent (guarded by `hasMigratedUpdatePreferences`), so calling
+        // it on every launch costs one UserDefaults read.
+        UpdatePreferences.migrateAutomaticChecks(in: defaults)
+
+        self.feed = feed
+        self.clock = clock
+        self.defaults = defaults
+        self.currentVersion = currentVersion
+        // A caller that supplies a controller has already decided Sparkle is available. Otherwise
+        // one is built only where it can work, and its delegates are attached in
+        // `attachSparkleDelegate()` below: Sparkle takes them at init and has no setter, and it
+        // holds them weakly, so the model has to own them. Attaching is a separate step because a
+        // stored property cannot be passed to another object through `self` before every stored
+        // property is initialised.
+        if let updaterController {
+            self.updaterController = updaterController
+        } else if Self.canUseSparkle {
+            let delegate = SparkleUpdateDelegate()
+            self.updaterController = SPUStandardUpdaterController(
+                startingUpdater: false,
+                updaterDelegate: delegate,
+                userDriverDelegate: delegate
+            )
+            sparkleDelegate = delegate
+        } else {
+            self.updaterController = nil
+        }
+        // Sparkle writes its own skipped-version keys, and a skip made in its window persists across
+        // launches, so both sources are read here. Reading only PaneSpace's key would restore a
+        // banner for a version the user had already skipped in Sparkle.
+        let storedSkipped = defaults.string(forKey: Self.skippedVersionKey)
+            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+        // Read into locals first: a stored property cannot be read through `self` before every other
+        // stored property is initialized.
+        let storedAutomaticChecks = Self.readAutomaticChecks(from: defaults)
+        let storedPrereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
+        skippedVersion = storedSkipped
+        automaticallyChecks = storedAutomaticChecks
+        includesPrereleases = storedPrereleases
+        observedSkippedVersion = storedSkipped
+        observePreferences()
+        attachSparkleDelegate()
+    }
+
+    /// Hands the delegate to the model it reports to.
+    ///
+    /// The reference from the delegate back to this model is weak, and the application holds the
+    /// model for the process's lifetime, so nothing is retained in a cycle.
+    private func attachSparkleDelegate() {
+        sparkleDelegate?.attach(to: self)
+    }
+
+    // MARK: - Sparkle availability
+
+    /// Whether this build can ask Sparkle about updates.
+    ///
+    /// Two things are required, and both are decided at build time by `build-app.sh`. The framework
+    /// has to be present — otherwise there is no updater at all — and the bundle needs a public key,
+    /// because without one there is no appcast to fetch and Sparkle has nothing to compare against.
+    /// A build missing either keeps using the stage-2 feed, which is a complete path in its own
+    /// right and is what an unsigned local build ships.
+    ///
+    /// The bundle check matters because a test runner and `swift run` are not app bundles: Sparkle
+    /// refuses to start against them, so asking would leave the updater dead rather than absent.
+    static var canUseSparkle: Bool {
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return false }
+        let key = (Bundle.main.infoDictionary?["SUPublicEDKey"] as? String) ?? ""
+        guard !key.isEmpty else { return false }
+        return key.range(of: "^[A-Za-z0-9+/]{43}=$", options: .regularExpression) != nil
+    }
+
+    /// Whether updates come from Sparkle rather than the stage-2 feed.
+    var usesSparkle: Bool { updaterController != nil }
+
+    /// The updater, for a view that binds Sparkle's own settings directly.
+    var updater: SPUUpdater? { updaterController?.updater }
+
+    // MARK: - Lifecycle
+
+    /// Removes the preference observer. The token is cleared here because a `deinit` may not touch
+    /// main-actor state, and the observer holds only a weak reference, so nothing outlives the model.
+    nonisolated deinit {
+        MainActor.assumeIsolated {
+            if let defaultsObservation {
+                NotificationCenter.default.removeObserver(defaultsObservation)
+            }
+        }
+    }
+
+    /// Watches the injected defaults so the model reacts however the preference was written.
+    ///
+    /// A view may bind these keys with `@AppStorage`, a `Binding`, or plain `UserDefaults` code, and
+    /// only the first of those would ever reach a computed setter. Observing the store means the
+    /// response is the same in every case, which is what keeps the model and the Settings window
+    /// from disagreeing about which channel is active.
+    private func observePreferences() {
+        let defaults = self.defaults
+        defaultsObservation = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: defaults,
+            queue: nil
+        ) { [weak self] _ in
+            // The notification arrives on whatever thread wrote the value; the response touches
+            // main-actor state, so the hop is explicit.
+            Task { @MainActor [weak self] in
+                self?.preferencesDidChange()
+            }
+        }
+    }
+
+    private func preferencesDidChange() {
+        let automaticChecks = Self.readAutomaticChecks(from: defaults)
+        let prereleases = defaults.bool(forKey: Self.includesPrereleasesKey)
+        // Both paths keep their skipped version in Sparkle's key, so one read serves both.
+        let skipped = defaults.string(forKey: Self.skippedVersionKey)
+            ?? SparkleSkippedUpdate.currentSkippedVersion(in: defaults)
+
+        // Assigning the published properties is what routes the response. Each `didSet` writes the
+        // value back and then performs exactly the cancellation or rescheduling a write through the
+        // model would have performed, so there is one response path rather than two that can drift
+        // apart. The comparison is against the published value rather than a separate cache, so the
+        // value and the response to it cannot disagree.
+        if prereleases != includesPrereleases {
+            includesPrereleases = prereleases
+        }
+        if skipped != skippedVersion {
+            observedSkippedVersion = skipped
+            skippedVersion = skipped
+        }
+        if automaticChecks != automaticallyChecks {
+            automaticallyChecks = automaticChecks
+        }
+    }
+
+    private static func readAutomaticChecks(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: automaticallyChecksKey) == nil
+            ? true
+            : defaults.bool(forKey: automaticallyChecksKey)
+    }
+
+    /// Whether this build can be compared with releases at all.
+    ///
+    /// A binary launched outside an app bundle — `swift run`, a test runner — has no
+    /// `CFBundleShortVersionString`, and "is this release newer?" has no honest answer without one,
+    /// so nothing is checked.
+    var isSupported: Bool { currentVersion != nil }
+
+    /// The version this build compares against, for display in Settings.
+    var currentVersionDescription: String { currentVersion?.description ?? L10n.text("Unknown") }
+
+    /// Whether checks happen on their own. Defaults to true for a new install.
+    ///
+    /// The single stored copy is Sparkle's own key, so the Settings toggle and Sparkle cannot
+    /// disagree about whether checks run. On the stage-2 path the same key is read and written
+    /// directly, which keeps one key for both paths rather than migrating it a second time.
+    @Published var automaticallyChecks: Bool {
+        didSet {
+            guard automaticallyChecks != oldValue else { return }
+            defaults.set(automaticallyChecks, forKey: Self.automaticallyChecksKey)
+            if usesSparkle {
+                // Sparkle owns the schedule; the property is what it reads. Setting it also restarts
+                // its update cycle, so nothing else has to be rescheduled here.
+                updaterController?.updater.automaticallyChecksForUpdates = automaticallyChecks
+            } else if automaticallyChecks {
+                restateSchedule()
+            } else {
+                // Switching off has to stop work already in flight, not only future runs.
+                stopWork()
+            }
+        }
+    }
+
+    /// Whether pre-releases are offered. Shares the `betaUpdates` key the Settings window already
+    /// binds, so the toggle and the model cannot disagree.
+    ///
+    /// With Sparkle the key is a *view* of which channels the updater may look in, not a stored
+    /// answer: the updater asks the delegate again on the next check, and the banner is dropped
+    /// because the version on it belonged to a channel that may no longer be allowed.
+    @Published var includesPrereleases: Bool {
+        didSet {
+            guard includesPrereleases != oldValue else { return }
+            defaults.set(includesPrereleases, forKey: Self.includesPrereleasesKey)
+            handlePrereleasesChanged()
+        }
+    }
+
+    /// Begins the update schedule. Calling it twice keeps the first schedule.
+    ///
+    /// The first check runs immediately rather than a day later, because someone who just launched
+    /// after a release is exactly the case an update banner exists for.
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+        if usesSparkle {
+            startSparkle()
+        } else {
+            restateSchedule()
+        }
+    }
+
+    /// Stops the schedule, cancels any check in flight, and allows a later `start()`.
+    func stop() {
+        hasStarted = false
+        stopWork()
+    }
+
+    /// Checks now because the user asked, and publishes the outcome.
+    ///
+    /// On the Sparkle path the check is Sparkle's, and it reports back through the delegate: the
+    /// result arrives in `lastManualResult` when the cycle ends, so the value returned here is only
+    /// what is known at this moment.
+    @discardableResult
+    func checkNow() async -> UpdateCheckResult {
+        guard usesSparkle else {
+            return await runCheck(origin: .manual)
+        }
+        isChecking = true
+        updaterController?.updater.checkForUpdates()
+        return .upToDate
+    }
+
+    /// Stops offering the offered update.
+    ///
+    /// On the Sparkle path this records the skip in the keys Sparkle reads it from, because taking
+    /// over presentation means its own "Skip" button is never shown. Writing a PaneSpace key instead
+    /// would give two answers to one question, and the next check would offer the same version again.
+    func skip(version: String) {
+        if case .sparkle(let offer) = availableUpdate, offer.displayVersion == version {
+            SparkleSkippedUpdate.recordSkip(of: offer, in: defaults)
+            skippedVersion = offer.versionString
+            availableUpdate = nil
+            return
+        }
+        skippedVersion = version
+        defaults.set(version, forKey: Self.skippedVersionKey)
+        // Kept in step with the store so the write above is not re-applied as an external change.
+        observedSkippedVersion = version
+        clearIfShowing(version)
+    }
+
+    /// Installs the offered update.
+    ///
+    /// The banner never downloads or replaces anything itself. `checkForUpdates()` is what brings the
+    /// update back into Sparkle's own window, which is where Install, Skip and Release Notes live and
+    /// where the version the user confirms is the one Sparkle downloads. A separate action that only
+    /// PaneSpace knew about would be a second update path, and the version it installed could differ
+    /// from the one the banner named.
+    func installAvailableUpdate() {
+        guard case .sparkle = availableUpdate else {
+            // The stage-2 path found a release it cannot install; its whole design is "tell the
+            // user where the release is", so the release page is the honest destination.
+            if let url = availableUpdate?.releaseNotesURL {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        updaterController?.updater.checkForUpdates()
+    }
+
+    /// Hides the banner without remembering the version, so the next check may show it again.
+    func dismiss() {
+        availableUpdate = nil
+    }
+
+    // MARK: - Sparkle
+
+    /// Starts the updater and applies the stored schedule to it.
+    private func startSparkle() {
+        guard let updater = updaterController?.updater else { return }
+        // The channel is asked per check through the delegate, but the interval and the switch are
+        // the updater's own properties, so they are set before it starts scheduling.
+        updater.automaticallyChecksForUpdates = automaticallyChecks
+        updater.updateCheckInterval = Self.checkInterval
+        do {
+            try updater.start()
+        } catch {
+            // A bundle Sparkle refuses leaves the stage-2 feed as the working path rather than a
+            // silently dead update button. The log names the reason only.
+            logger.notice("Sparkle refused to start: \(self.logReason(for: Self.mapSparkleError(error)), privacy: .public)")
+        }
+    }
+
+    /// Publishes an offer Sparkle handed the presentation of.
+    func presentSparkleOffer(_ offer: SparkleUpdateOffer?) {
+        guard let offer else { return }
+        isChecking = false
+        availableUpdate = .sparkle(offer)
+    }
+
+    /// Records that Sparkle finished looking, whether or not an update was found.
+    func noteSparkleFoundUpdate() {
+        isChecking = false
+        lastCheckDate = clock.now()
+    }
+
+    /// Drops an offer the last check did not confirm.
+    func dropStaleSparkleOffer() {
+        availableUpdate = nil
+    }
+
+    /// Mirrors a skip Sparkle recorded itself, so the banner stops offering it.
+    func mirrorSkippedVersion(_ version: String?) {
+        guard let version else { return }
+        skippedVersion = version
+        // `skippedVersion` is published rather than `private(set)`-assigned here, so the write is
+        // the one place the published state changes; the cache stops the defaults observer from
+        // re-applying the same value as an external change.
+        observedSkippedVersion = version
+        clearIfShowing(version)
+    }
+
+    /// The update session is over, so nothing about the last offer is still true.
+    func endSparkleUpdateSession() {
+        availableUpdate = nil
+    }
+
+    /// Publishes the end of a Sparkle update cycle.
+    ///
+    /// A manual check reports its outcome; a scheduled one only records the time and any failure,
+    /// exactly as the stage-2 path does, so a background failure never interrupts anyone.
+    func finishSparkleCycle(updateCheck: SPUUpdateCheck, error: (any Error)?) {
+        lastCheckDate = clock.now()
+        isChecking = false
+        let failure = error.map(Self.mapSparkleError)
+        switch updateCheck {
+        case .updates:
+            lastAutomaticFailure = nil
+            if let failure {
+                lastManualResult = .failed(failure)
+            } else {
+                // A completed manual check either found the update the banner is already showing or
+                // found nothing. Both are a successful check, and the banner is left alone because
+                // the offer it holds was published by the delegate when it was found.
+                lastManualResult = .upToDate
+            }
+        case .updatesInBackground:
+            if let failure {
+                lastAutomaticFailure = failure
+                logger.debug("scheduled update check failed: \(self.logReason(for: failure), privacy: .public)")
+            } else {
+                lastAutomaticFailure = nil
+            }
+        case .updateInformation:
+            // Sparkle's information probe feeds its own permission prompt; it has no outcome to
+            // publish and must not be mistaken for the user asking for a check.
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    /// Normalizes a Sparkle error into the coarse cases the UI already knows how to word.
+    ///
+    /// Sparkle's errors carry URLs, host paths and internal codes, so nothing but the coarse case
+    /// crosses into state or into a log line.
+    static func mapSparkleError(_ error: any Error) -> UpdateFeedError {
+        let nsError = error as NSError
+        guard nsError.domain == SUSparkleErrorDomain else { return .unreachable }
+        // The Sparkle error codes are an `SUError` enum, which is `Int32`-backed, while
+        // `NSError.code` hands back an `Int`. Converting through the enum's own type is what keeps
+        // the comparison honest instead of relying on a coincidence of raw values.
+        let code = SUError(rawValue: Int32(truncatingIfNeeded: nsError.code))
+        return switch code {
+        case .some(.appcastParseError),
+             .some(.appcastError),
+             .some(.resumeAppcastError),
+             .some(.invalidFeedURLError),
+             .some(.insecureFeedURLError),
+             .some(.noPublicDSAFoundError),
+             .some(.insufficientSigningError):
+            // The feed is missing, unparseable, plaintext, or unsigned. None of these is a reason to
+            // offer a download, so the user is put on a retry and the failure stays coarse.
+            .invalidResponse
+        default:
+            .unreachable
+        }
+    }
+
+    // MARK: - Stage-2 feed path
+
+    private func runCheck(origin: Origin) async -> UpdateCheckResult {
+        // A check already in flight is superseded: its answer would describe a different feed state.
+        supersedeRunningCheck()
+        let generation = checkGeneration
+        guard let currentVersion else {
+            // Nothing to compare against. A manual check reports the reason; a scheduled one is
+            // never started in the first place.
+            return finish(.failed(.invalidResponse), origin: origin)
+        }
+
+        isChecking = true
+        let outcome = await performRequest(includingPrereleases: includesPrereleases)
+        // The state below belongs to whichever check is current. A check that lost the model while
+        // it was waiting must not clear the running check's task, must not report it as no longer
+        // in progress, and must not publish its own result.
+        guard generation == checkGeneration else {
+            return .failed(.cancelled)
+        }
+        checkTask = nil
+        isChecking = false
+
+        switch outcome {
+        case .cancelled:
+            // A cancellation is not an answer. Reporting the previous result would hand the caller
+            // something stale, so the caller is told the check was cancelled and no state is
+            // published, leaving whatever the replacement check publishes intact.
+            return .failed(.cancelled)
+        case .failed(let error):
+            return finish(.failed(error), origin: origin)
+        case .completed(let release):
+            if let release, release.isUpdate(over: currentVersion), isOfferable(release) {
+                return finish(.available(release), origin: origin)
+            }
+            return finish(.upToDate, origin: origin)
+        }
+    }
+
+    /// Runs the feed request off the main actor. `Task {}` inherits the main actor, so the work is
+    /// explicitly detached from it and the result comes back on the main actor.
+    private func performRequest(includingPrereleases: Bool) async -> CheckOutcome {
+        let feed = self.feed
+        let task = Task<CheckOutcome, Never>.detached {
+            do {
+                let release = try await feed.latestRelease(includingPrereleases: includingPrereleases)
+                // Cancellation is checked after the call as well as in the failure paths: a request
+                // that finishes normally after being cancelled still has to be discarded, or a
+                // superseded check would overwrite the answer that replaced it.
+                return Task.isCancelled ? .cancelled : .completed(release)
+            } catch let error as UpdateFeedError {
+                return Task.isCancelled ? .cancelled : .failed(error)
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return Task.isCancelled ? .cancelled : .failed(.unreachable)
+            }
+        }
+        checkTask = task
+        return await task.value
+    }
+
+    private func finish(_ result: UpdateCheckResult, origin: Origin) -> UpdateCheckResult {
+        lastCheckDate = clock.now()
+        switch origin {
+        case .manual:
+            lastManualResult = result
+            lastAutomaticFailure = nil
+            if case .failed(let error) = result {
+                // The log names the reason only. No host, no path, no request parameters.
+                logger.notice("manual update check failed: \(self.logReason(for: error), privacy: .public)")
+            }
+        case .automatic:
+            if case .failed(let error) = result {
+                lastAutomaticFailure = error
+                logger.debug("scheduled update check failed: \(self.logReason(for: error), privacy: .public)")
+            } else {
+                lastAutomaticFailure = nil
+            }
+        }
+
+        switch result {
+        case .available(let release):
+            availableUpdate = .release(release)
+        case .upToDate, .failed:
+            // A scheduled failure keeps whatever the user was already told, so a transient error
+            // never hides a banner that is still true.
+            if origin == .manual { availableUpdate = nil }
+        }
+        return result
+    }
+
+    private func logReason(for error: UpdateFeedError) -> String {
+        error.isRateLimited ? "rate-limited" : "unavailable"
+    }
+
+    /// A release the user has not chosen to ignore. Skipping hides one version, not the channel: a
+    /// higher version is still offered.
+    private func isOfferable(_ release: ReleaseInfo) -> Bool {
+        guard let skippedVersion else { return true }
+        return release.tag != skippedVersion && release.displayVersion != skippedVersion
+    }
+
+    private func clearIfShowing(_ version: String) {
+        if availableUpdate?.matchesSkippedVersion(version) == true {
+            availableUpdate = nil
+        }
+    }
+
+    private func restateSchedule() {
+        scheduleTask?.cancel()
+        scheduleTask = nil
+        supersedeRunningCheck()
+        guard hasStarted, automaticallyChecks, isSupported else { return }
+
+        let interval = Self.checkInterval
+        let clock = self.clock
+        scheduleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    // Held strongly for the check only. A binding scoped to the whole loop would
+                    // also cover the sleep below, keeping a released model alive for the next 24
+                    // hours — the opposite of what a released model should do.
+                    guard let self else { return }
+                    await self.performScheduledCheck()
+                }
+                do {
+                    try await clock.sleep(for: interval)
+                } catch {
+                    // Cancellation ends the schedule; nothing is left to do on this turn.
+                    return
+                }
+            }
+        }
+    }
+
+    private func performScheduledCheck() async {
+        guard automaticallyChecks, isSupported else { return }
+        // The outcome is already published on the model; the caller has nothing to do with it.
+        _ = await runCheck(origin: .automatic)
+    }
+
+    private func stopWork() {
+        scheduleTask?.cancel()
+        scheduleTask = nil
+        supersedeRunningCheck()
+        isChecking = false
+    }
+
+    /// The channel changed, so every answer computed for the previous one is no longer an answer.
+    private func handlePrereleasesChanged() {
+        availableUpdate = nil
+        lastManualResult = nil
+        lastAutomaticFailure = nil
+        if usesSparkle {
+            // Nothing to reschedule: Sparkle asks the delegate for the channel on each check. The
+            // banner is dropped above because the version it named may no longer be allowed.
+            if hasStarted, automaticallyChecks {
+                updaterController?.updater.resetUpdateCycle()
+            }
+            return
+        }
+        restateSchedule()
+    }
+
+    private enum Origin {
+        case automatic
+        case manual
+    }
+}

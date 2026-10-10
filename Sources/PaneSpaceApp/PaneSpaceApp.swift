@@ -1,9 +1,30 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // The stage-2 -> Sparkle preference migration is NOT done here. It has to
+        // run before `UpdateModel` reads `SUEnableAutomaticChecks`, and this
+        // callback is too late for that: `@StateObject` builds the model during
+        // `PaneSpaceApp`'s initialisation, which happens before the application
+        // finishes launching. It therefore runs at the top of `UpdateModel.init`,
+        // which is the only place guaranteed to be first.
+        //
+        // The updater controller itself is deliberately not created here either.
+        // `UpdateModel` owns it (see its initialiser), because a second
+        // `SPUStandardUpdaterController` would be a second `SPUUpdater` running
+        // its own update cycle against the same feed: two schedulers writing
+        // `SULastCheckTime`, two download attempts, and a delegate with no model
+        // attached competing over presentation. What ADR 0011 §4 actually
+        // requires is satisfied where it is created — on the main actor, with
+        // both delegates passed at init because the controller has no setter for
+        // them, and held in a stored property so Sparkle's weak references stay
+        // valid.
     }
 }
 
@@ -17,6 +38,12 @@ struct PaneSpaceApp: App {
             ContentView()
                 .environmentObject(appModel)
                 .frame(minWidth: 1_000, minHeight: 640)
+                .task {
+                    // The update schedule starts with the first window. It checks immediately and
+                    // then once a day, and does nothing when automatic checks are off or the build
+                    // carries no version to compare.
+                    appModel.updates.start()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1_180, height: 760)
@@ -148,6 +175,20 @@ struct PaneSpaceApp: App {
                     appModel.isShowingSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+
+            // Its own group rather than an extra item in the settings group: `.appSettings` renders
+            // after "Settings…", which would put the check below the item the user just used to
+            // leave, instead of directly after "About PaneSpace" where macOS — and every Sparkle
+            // app — puts it.
+            //
+            // A build with no version to compare against has no honest answer to a check, so the
+            // command is disabled rather than failing silently.
+            CommandGroup(after: .appInfo) {
+                Button(L10n.text("Check for Updates…")) {
+                    Task { await UpdateCheckAction.runAndAlert(appModel.updates) }
+                }
+                .disabled(!appModel.updates.isSupported || appModel.updates.isChecking)
             }
         }
     }

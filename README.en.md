@@ -64,3 +64,5 @@ Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) an
 ## License
 
 PaneSpace is open source under the [MIT License](LICENSE).
+
+In-app updates are provided by [Sparkle](https://github.com/sparkle-project/Sparkle) 2.10.0 (MIT). See [third-party notices](docs/THIRD-PARTY-NOTICES.md) for the full copyright notice.

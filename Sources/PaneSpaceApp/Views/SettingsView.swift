@@ -16,6 +16,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     case permissions = "Permissions"
     case extensions = "Extensions"
     case advanced = "Advanced"
+    case updates = "Updates"
     case about = "About"
 
     var id: String { rawValue }
@@ -36,6 +37,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .permissions: "lock.shield"
         case .extensions: "puzzlepiece.extension"
         case .advanced: "slider.horizontal.3"
+        case .updates: "arrow.down.circle"
         case .about: "info.circle"
         }
     }
@@ -117,6 +119,7 @@ struct SettingsView: View {
         case .permissions: PermissionSettingsPage()
         case .extensions: ExtensionSettingsPage()
         case .advanced: AdvancedSettingsPage()
+        case .updates: UpdatesSettingsPage()
         case .about: AboutSettingsPage()
         }
     }
@@ -604,14 +607,14 @@ private struct ExtensionSettingsPage: View {
 
 private struct AdvancedSettingsPage: View {
     @EnvironmentObject private var appModel: AppModel
-    @AppStorage("betaUpdates") private var betaUpdates = false
     @AppStorage("diagnosticLogging") private var diagnosticLogging = false
     @State private var confirmsReset = false
 
     var body: some View {
         SettingsPage(title: "Advanced", subtitle: "Development, diagnostics, and reset controls.") {
-            SettingsGroup(title: "Updates and Diagnostics") {
-                SettingsToggle("Include beta updates", isOn: $betaUpdates, planned: true)
+            // The beta switch used to live here as a planned item. It works now and is on the
+            // Updates page, next to the other two switches that decide which updates arrive.
+            SettingsGroup(title: "Diagnostics") {
                 SettingsToggle("Diagnostic logging", isOn: $diagnosticLogging, planned: true)
             }
 
@@ -636,6 +639,133 @@ private struct AdvancedSettingsPage: View {
     private func resetDefaults() {
         PaneSpacePreferences.reset()
         appModel.workspaceShortcuts.reload()
+    }
+}
+
+private struct UpdatesSettingsPage: View {
+    @EnvironmentObject private var appModel: AppModel
+    @State private var feedback: UpdateCheckFeedback?
+
+    private var updates: UpdateModel { appModel.updates }
+
+    var body: some View {
+        SettingsPage(
+            title: "Updates",
+            subtitle: "Choose when PaneSpace looks for a new version, and check right now."
+        ) {
+            SettingsGroup(title: "Automatic Checks") {
+                SettingsToggle("Automatically check for updates", isOn: automaticChecks)
+                SettingsToggle(
+                    "Include beta updates",
+                    isOn: betaUpdates,
+                    accessibilityLabel: "Include beta updates"
+                )
+            }
+
+            SettingsGroup(title: "Check Now") {
+                SettingRow("Check for Updates", detail: lastCheckDescription) {
+                    Button(L10n.text("Check Now")) {
+                        Task { feedback = await UpdateCheckAction.run(updates) }
+                    }
+                    .disabled(!updates.isSupported || updates.isChecking)
+                    .frame(width: 130)
+                }
+
+                if updates.isChecking {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Checking for updates…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+            }
+
+            SettingsGroup(title: "Version") {
+                SettingRow("PaneSpace version") {
+                    Text(updates.currentVersionDescription)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+
+                if !updates.isSupported {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text("This build has no version number, so it cannot be compared with releases.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+
+                if let skippedVersion = updates.skippedVersion {
+                    HStack(spacing: 8) {
+                        Image(systemName: "forward.end.alt")
+                            .foregroundStyle(.secondary)
+                        Text(L10n.format("Skipped version: %@", skippedVersion))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .alert(item: $feedback) { result in
+            Alert(
+                title: Text(result.title),
+                message: Text(result.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    // The two switches are bindings onto the model rather than onto `@AppStorage`: the model is
+    // the single answer to both questions (ADR 0011 decision 3 — the automatic-checks switch is
+    // stored once, in Sparkle's own key), and binding the key directly would give the window and the
+    // updater two ways to write it.
+    private var automaticChecks: Binding<Bool> {
+        Binding(get: { updates.automaticallyChecks }, set: { updates.automaticallyChecks = $0 })
+    }
+
+    private var betaUpdates: Binding<Bool> {
+        Binding(get: { updates.includesPrereleases }, set: { updates.includesPrereleases = $0 })
+    }
+
+    /// The last check's time and outcome, as one sentence.
+    ///
+    /// Each branch is a complete localized sentence rather than a sentence with a part dropped in:
+    /// the wording of a relative time, and the words around it, belong to the same translator.
+    private var lastCheckDescription: String? {
+        if updates.isChecking {
+            return L10n.text("Checking for updates…")
+        }
+        guard let lastCheckDate = updates.lastCheckDate else {
+            return L10n.text("Never checked for updates.")
+        }
+        let when = UpdateCheckTiming.relativeText(for: lastCheckDate, now: Date())
+        guard let result = updates.lastManualResult else {
+            return L10n.format("Last checked %@", when)
+        }
+        return L10n.format("Last checked %@ — %@", when, UpdateSettingsSummary.text(for: result))
+    }
+}
+
+private enum UpdateSettingsSummary {
+    /// The outcome of the last manual check, in the words the user sees.
+    static func text(for result: UpdateCheckResult) -> String {
+        switch result {
+        case .upToDate:
+            return L10n.text("PaneSpace is up to date.")
+        case .available(let release):
+            return L10n.format("PaneSpace %@ is available.", release.displayVersion)
+        case .failed(let error):
+            return error.errorDescription ?? L10n.text("The update service could not be reached.")
+        }
     }
 }
 
@@ -745,11 +875,23 @@ private struct SettingsToggle: View {
     let title: String
     @Binding var isOn: Bool
     var planned = false
+    /// The name VoiceOver gives the switch itself.
+    ///
+    /// The switch is rendered with `labelsHidden()`, so the visible title is a sibling of it rather
+    /// than its label and VoiceOver would otherwise announce an unnamed "switch". A page that needs
+    /// the switch to name itself passes the title here; the rest keep the existing behaviour.
+    var accessibilityLabel: String?
 
-    init(_ title: String, isOn: Binding<Bool>, planned: Bool = false) {
+    init(
+        _ title: String,
+        isOn: Binding<Bool>,
+        planned: Bool = false,
+        accessibilityLabel: String? = nil
+    ) {
         self.title = title
         self._isOn = isOn
         self.planned = planned
+        self.accessibilityLabel = accessibilityLabel
     }
 
     var body: some View {
@@ -761,6 +903,7 @@ private struct SettingsToggle: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .disabled(planned)
+                .accessibilityLabel(L10n.text(accessibilityLabel ?? title))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

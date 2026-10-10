@@ -64,3 +64,6 @@ swift test
 ## 许可证
 
 PaneSpace 基于 [MIT License](LICENSE) 开源。
+
+应用内更新由 [Sparkle](https://github.com/sparkle-project/Sparkle) 2.10.0 提供（MIT）。
+第三方组件的完整版权声明见 [第三方组件声明](docs/THIRD-PARTY-NOTICES.md)。
