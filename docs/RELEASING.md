@@ -72,8 +72,24 @@ rm -rf ~/PaneSpace-signing
    git push origin v0.2.0
    ```
 
-3. `push` tag 触发 `.github/workflows/release.yml`：跑测试 → 从 tag 派生版本 → 在临时 keychain 中导入证书 → 签名构建 → 校验签名 → 打包 → 生成 `.sha256` 和 `.sig` 并验签 → 上传到对应 Release。Release 不存在时创建 **draft**，tag 含 `-` 时标记为 prerelease。已有的 draft 或正式 Release 会**追加**（覆盖同名）资产，所以同一个 tag 重跑不会产生重复 draft。
+3. `push` tag 触发 `.github/workflows/release.yml`：跑测试 → 从 tag 派生版本 → 在临时 keychain 中导入证书 → 签名构建 → 校验签名 → 打包 → 生成 `.sha256` 和 `.sig` 并验签 → 上传到对应 Release。Release 不存在时创建 **draft**，tag 含 `-` 时标记为 prerelease。已有的 draft 或正式 Release 会**追加**（覆盖同名）资产，所以同一个 tag 重跑不会产生重复 draft。appcast.xml 也作为附件上传到 Release，供第 4 步取用。
 4. 在 GitHub 上检查 draft Release 的发行说明，**手动点击发布**。
+
+   点击发布的同时，GitHub 触发 `release: published` 事件，同一个 workflow 再跑一次，只执行 `publish-appcast` job：它从刚公开的 Release 上取回 appcast.xml，确认 appcast 里这个 tag 的每个下载地址（zip 和 delta）都能匿名访问并返回 HTTP 200，然后才提交到 `appcast` 分支。
+
+   **appcast 只在 Release 公开之后才发布。** draft 的附件对匿名访问返回 404，如果在打 tag 的那一次运行里就提交 appcast，从建 draft 到你点发布之间，所有已安装的用户都会看到更新横幅、点下去却下载失败；如果这个 draft 最后不发，appcast 还会一直推荐一个永远下不到的版本。draft 本身仍然挡住了自动发版：坏 tag 到不了这一步，必须有人先读过发行说明。
+
+   **appcast 在 tag 推送时就生成好了，几天后才提交。** 为了让提交方知道这份快照是不是已经过期，build 会把它当时读到的 `appcast` 分支提交记到 `appcast-base.txt`（分支还不存在时记 `none`），一起作为附件上传。`publish-appcast` fetch 之后会比对：分支 HEAD 与记录不一致就报错退出，不会写入。场景是有两个 draft 同时挂着，先发布 B 再发布先打的 A，A 的快照里没有 B 的条目，整份覆盖就会把 B 从 feed 里抹掉。
+
+   如果 `publish-appcast` job 失败，`appcast` 分支保持原样，旧版本用户继续正常更新，不会看到一个坏掉的新版本。按错误信息恢复：
+
+   | 报错 | 恢复步骤 |
+   | --- | --- |
+   | `The appcast branch is now at …, but this appcast was built on …` | 快照已过期。在 Actions 上找到这个 tag 的那次运行，Re-run all jobs（会按当前分支 HEAD 重新生成 appcast.xml 和 appcast-base.txt 并覆盖上传），再到 `release: published` 那次运行上 Re-run 这个 job。 |
+   | `The appcast branch does not exist, but this appcast was built on …` | 分支被删了。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
+   | `carries no appcast-base.txt` | 这个 Release 是旧版 workflow 建的，没有 base 附件。同样先 Re-run 这个 tag 的构建，再重跑发布 job。 |
+   | `answered HTTP 404` | 刚公开时 CDN 可能短暂返回 404。重跑这个 job 即可；持续失败说明 Release 上的附件确实缺失，回上一条处理。 |
+   | 在 Actions 页面上看到这次运行显示为取消 | 所有发布运行共用一个 concurrency 组，GitHub 在同一组里最多保留 1 个排队中的运行，排在 build 后面的发布运行可能被后来的运行顶掉。重跑这次发布运行即可。
 
 发布过程全在 CI 上完成，本机不生成 keychain，也不需要本地清理。
 
@@ -152,5 +168,6 @@ designated => identifier "org.panespace.app" and certificate root = H"..."
 - 证书和私钥**不进入仓库**，只以 GitHub Actions secret 形式保存。
 - workflow 日志不打印密钥、密码或本机绝对路径。Ed25519 私钥只经环境变量传给签名脚本，不进 argv。
 - 发布 job 与构建 job 分离：上传 job 只有 `contents: write` 权限，看不到证书和私钥；上传前会重新验签并核对 SHA-256。
+- 公开的 appcast 分支只在 Release 公开之后由 `publish-appcast` job 写入，写入前用不带凭据的请求确认该 Release 的下载地址全部返回 200，避免 feed 推荐一个下载不到的版本。
 - 临时 keychain 使用随机密码，密码经 `::add-mask::` 屏蔽且**不写入** `$GITHUB_OUTPUT`；keychain 与中间文件按固定路径在 job 结束时无条件删除（`if: always()`），即使导入失败也能清理。
 - 签名身份用证书 SHA-1 传入，**不调用 `security add-trusted-cert`**：自签名证书不写入任何 trust settings 域，因此不会在 runner 上留下无法清理的信任残留。
