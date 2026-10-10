@@ -127,7 +127,7 @@ codesign --verify --deep --strict --verbose=2 dist/PaneSpace.app
 
 **`DYLD_INSERT_LIBRARIES` 那一项在 CI 上会被跳过**：GitHub 托管的 `macos-26` runner 的
 SIP 是关闭的，不执行 hardened runtime 对 `DYLD_*` 的限制，脚本会检测到并报
-`skipped: this machine does not enforce hardened-runtime DYLD restrictions`。其余四项在 CI
+`skipped: this machine does not enforce hardened-runtime DYLD restrictions`。其余三项在 CI
 上仍然是硬性检查。改动了打包或签名时，那一项要在本机（SIP enabled）跑才算数；出现
 `skipped` 就说明这一项在那台机器上没有执行。
 

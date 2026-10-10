@@ -643,11 +643,12 @@ constructor，marker 只可能来自真实注入）：
 
 **CI 上第四项会被跳过。** GitHub 托管的 `macos-26` runner 的 SIP 是关闭的
 （实测 `csrutil status` 为 disabled），不执行 hardened runtime 对 DYLD 的限制，所以
-负向对照在那里会被注入、第四项报 `skipped`。前四项（存活、无 dyld 报错、Sparkle 已
+负向对照在那里会被注入、第四项报 `skipped`。前三项（存活、无 dyld 报错、Sparkle 已
 加载）仍然是硬性检查。**第四项的硬性检查要在本机跑**（SIP enabled），发布前按
 `RELEASING.md` 的本地构建一节跑一次 `./scripts/launch-smoke-test.sh`。
 
-第四轮的实测（ad-hoc，`make app` 默认构建）：
+第四轮的实测（ad-hoc，`make app` 默认构建）。**以下为第四轮旧版脚本的输出**，那时的
+对照还没有负向对照，第四项也还没有在对照可注入时转为 `skipped`：
 
 ```
 $ ./scripts/launch-smoke-test.sh
