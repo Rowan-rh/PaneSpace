@@ -57,7 +57,27 @@ Swift Package 会处理源代码构建所需的本地化资源。`scripts/build-
 5. 使用确定性夹具或本地测试服务器编写 Provider 契约测试。
 6. 共享契约变化时更新 `ARCHITECTURE.md` 并添加 ADR。
 
-当前 `FileProviding` 协议保持精简并以异步方式工作。本地 actor 将阻塞的 `FileManager` 调用隔离在主线程之外。首个远程 Provider 上线前，应补充能力报告、进度和 Provider 级取消；不要把这些逻辑放入 SwiftUI 视图。
+当前 `FileProviding` 协议保持精简并以异步方式工作。本地 actor 将阻塞的 `FileManager` 调用隔离在主线程之外。云盘 Provider 实现 `RemoteFileProviding`，由 `RoutingFileProvider` 和 `RoutingTransferService` 按 URL scheme 路由（见 [ADR 0012](adr/0012-cloud-drive-providers.md)）。SFTP 等后续 Provider 上线前，仍应补充能力报告；不要把这些逻辑放入 SwiftUI 视图。云盘 Provider 的测试用 `StubURLProtocol` 回放 HTTP 应答，传输测试用内存中的 `InMemoryCloudDrive`，不访问真实网络。
+
+## 云盘应用凭据
+
+Google 云端硬盘和百度网盘只允许已注册的应用调用 API。仓库不包含任何凭据。
+
+- **Google 云端硬盘**：在 Google Cloud 控制台创建项目，启用 Google Drive API，配置 OAuth 同意屏幕并把要登录的账号加为测试用户，然后创建类型为“桌面应用”的 OAuth 客户端，得到客户端 ID 和客户端密钥。PaneSpace 使用 `https://www.googleapis.com/auth/drive` 权限和 `127.0.0.1` 回环重定向，无需登记回调地址。该权限属于受限范围：未经 Google 验证时登录页会出现未验证警告；同意屏幕处于“测试”状态时刷新令牌 7 天后失效，需要重新连接。
+- **百度网盘**：在[百度网盘开放平台](https://pan.baidu.com/union/console)完成实名认证并创建应用，得到 AppKey、SecretKey 和应用名称。PaneSpace 使用设备码授权，无需回调地址。第三方应用只能访问授权目录，默认是 `/apps/<应用名称>`（网盘中显示为“我的应用数据/<应用名称>”），在“连接服务器”中填写应用文件夹名称后，连接完成会直接打开该目录。未通过审核的应用接口频率和授权用户数都很低，日常使用前应在开放平台提交审核。
+
+用户可以在“连接服务器”中填写自己的凭据（保存在钥匙串中）。也可以在构建时通过环境变量写入应用包，用户只需登录：
+
+```bash
+PANESPACE_GOOGLE_DRIVE_CLIENT_ID=… \
+PANESPACE_GOOGLE_DRIVE_CLIENT_SECRET=… \
+PANESPACE_BAIDU_APP_KEY=… \
+PANESPACE_BAIDU_SECRET_KEY=… \
+PANESPACE_BAIDU_APP_FOLDER=… \
+make app
+```
+
+写入应用包的凭据会随下载包分发，任何人都能从中读出；桌面应用的 OAuth 客户端密钥本就无法保密，但不要把它们提交到仓库或写入日志。
 
 ## 更新检查
 

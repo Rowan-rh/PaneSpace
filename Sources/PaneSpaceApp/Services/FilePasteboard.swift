@@ -12,9 +12,26 @@ struct FilePasteboard {
 
     func write(_ urls: [URL]) {
         let fileURLs = urls.filter(\.isFileURL)
-        guard !fileURLs.isEmpty else { return }
+        let cloudURLs = urls.filter(CloudLocation.isCloud)
+        guard !fileURLs.isEmpty || !cloudURLs.isEmpty else { return }
         pasteboard.clearContents()
-        pasteboard.writeObjects(fileURLs.map { $0 as NSURL })
+        var objects: [NSPasteboardWriting] = fileURLs.map { $0 as NSURL }
+        // Cloud items mean nothing to other apps, so they travel in a type only PaneSpace reads.
+        if !cloudURLs.isEmpty {
+            let item = NSPasteboardItem()
+            item.setString(cloudURLs.map(\.absoluteString).joined(separator: "\n"), forType: .cloudLocations)
+            objects.append(item)
+        }
+        pasteboard.writeObjects(objects)
+    }
+
+    /// Items copied from a cloud drive in PaneSpace.
+    func cloudURLs() -> [URL] {
+        (pasteboard.pasteboardItems ?? [])
+            .compactMap { $0.string(forType: .cloudLocations) }
+            .flatMap { $0.split(separator: "\n") }
+            .compactMap { URL(string: String($0)) }
+            .filter(CloudLocation.isCloud)
     }
 
     func fileURLs() -> [URL] {
@@ -24,4 +41,8 @@ struct FilePasteboard {
         ) ?? []
         return objects.compactMap { ($0 as? NSURL) as URL? }
     }
+}
+
+extension NSPasteboard.PasteboardType {
+    static let cloudLocations = NSPasteboard.PasteboardType("org.panespace.cloud-locations")
 }

@@ -37,11 +37,22 @@ struct SidebarView: View {
                         ForEach(model.volumes) { location in
                             locationRow(location)
                         }
-
-                        Label("Connect to Server", systemImage: "network")
-                            .foregroundStyle(.secondary)
-                            .help("Remote providers are planned")
                     }
+                }
+
+                Section("Cloud Drives") {
+                    ForEach(cloudAccounts.accounts) { account in
+                        cloudRow(account)
+                    }
+                    Button {
+                        appModel.isConnectingToServer = true
+                    } label: {
+                        Label("Connect to Server…", systemImage: "plus.circle")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                 }
 
                 if showTagsGroup {
@@ -67,12 +78,14 @@ struct SidebarView: View {
                 .disabled(true)
                 .help("Add Bookmark — Planned")
 
-                Button {} label: {
+                Button {
+                    appModel.isConnectingToServer = true
+                } label: {
                     Image(systemName: "network")
                 }
                 .buttonStyle(.plain)
-                .disabled(true)
-                .help("Server Connections — Planned")
+                .help("Connect to Server…")
+                .accessibilityLabel("Connect to Server…")
 
                 Spacer()
 
@@ -148,10 +161,33 @@ struct SidebarView: View {
             }
     }
 
+    private var cloudAccounts: CloudAccountsModel {
+        appModel.cloudAccounts
+    }
+
+    private var cloudLocations: [SidebarLocation] {
+        cloudAccounts.accounts.map {
+            SidebarLocation(id: $0.sidebarID, title: $0.name, systemImage: $0.service.systemImage, url: $0.homeURL)
+        }
+    }
+
     private var navigableLocations: [SidebarLocation] {
         model.favorites
             + (showWorkspaceGroup ? availableWorkspaceLocations : [])
             + (showVolumesGroup ? model.volumes : [])
+            + cloudLocations
+    }
+
+    /// Account names are user data, shown verbatim; the service is named in the tooltip.
+    private func cloudRow(_ account: CloudAccount) -> some View {
+        Label(account.name, systemImage: account.service.systemImage)
+            .help(L10n.text(account.service.title))
+            .tag(account.sidebarID)
+            .contextMenu {
+                Button("Disconnect") {
+                    cloudAccounts.disconnect(account)
+                }
+            }
     }
 
     // Workspace names are user data, so they are shown verbatim rather than looked up for

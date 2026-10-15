@@ -6,7 +6,7 @@ final class FileTransferQueueModel: ObservableObject {
     @Published private(set) var jobs: [FileTransferJob] = []
     @Published private(set) var conflict: FileTransferConflict?
 
-    private let service: LocalTransferService
+    private let service: FileTransferServicing
     var didCompleteItem: @MainActor (URL, URL) -> Void
     /// Called once per run of a job that reached completed, failed, or cancelled. Items finished
     /// by an earlier run are left out, so retries are not reported twice.
@@ -16,7 +16,7 @@ final class FileTransferQueueModel: ObservableObject {
     private var decisionForRemainingConflicts: FileConflictDecision?
 
     init(
-        service: LocalTransferService = LocalTransferService(),
+        service: FileTransferServicing = LocalTransferService(),
         didCompleteItem: @escaping @MainActor (URL, URL) -> Void = { _, _ in }
     ) {
         self.service = service

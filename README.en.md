@@ -25,6 +25,7 @@ Download and extract the ZIP, move `PaneSpace.app` to Applications, and open it.
 - **Two browsing modes:** List and multi-level column views, with back, forward, parent-folder, and left/right arrow-key folder navigation.
 - **Local file operations:** Favorites and mounted volumes; search, sorting, hidden-file visibility, folder creation, rename, Trash, Quick Look, open with the default app, and Reveal in Finder. Folders with tens of thousands of items show their first entries right away and sort in the background without freezing the window.
 - **Multiple selection and batch rename:** Select like in Finder with Shift-click ranges, Command-click toggles, Shift-arrow extension, and `Command-A`. Rename several items at once by replacing text, adding a prefix or suffix, or numbering them, with a live preview that flags name conflicts before anything changes.
+- **Cloud drives:** Connect Google Drive or Baidu Netdisk from the sidebar’s Cloud Drives group, then browse, create folders, rename, and delete as in a local folder, and copy or move items to and from the Mac. Opening or previewing a cloud file downloads it to a cache first. Sign-in tokens are kept only in Keychain.
 - **Transfers between panes:** Copy, move, or drag local files between panes with byte-level progress; cancel even in the middle of a large file, retry, and choose whether name conflicts skip, keep both, or replace.
 - **Copy and paste files:** Select files and press `Command-C`, then press `Command-V` in any pane to paste them into its current folder. Works with Finder in both directions; pasting into the same folder makes a copy.
 - **Operation history and undo:** Copies, moves, renames, Trash, and new folders are recorded and stay available after relaunch under Transfer > Operation History. Undo them with `Command-Z` or from the history; undo uses only recoverable steps and never deletes files permanently.
@@ -34,7 +35,7 @@ Download and extract the ZIP, move `PaneSpace.app` to Applications, and open it.
 
 ## Current limitations
 
-PaneSpace currently supports local files only; SFTP, SMB, and WebDAV are planned. Security-scoped bookmark persistence for sandboxed distribution is not implemented, so file access depends on the permissions macOS grants to the running process. See the [roadmap](docs/ROADMAP.md) for planned work.
+Besides local files, PaneSpace can browse Google Drive and Baidu Netdisk; SFTP, SMB, and WebDAV are planned. Connecting a cloud drive needs app credentials registered with Google or Baidu, and Baidu only lets third-party apps reach the folders it grants them (by default “My App Data/<app name>”). Security-scoped bookmark persistence for sandboxed distribution is not implemented, so file access depends on the permissions macOS grants to the running process. See the [roadmap](docs/ROADMAP.md) for planned work.
 
 ## Run from source
 

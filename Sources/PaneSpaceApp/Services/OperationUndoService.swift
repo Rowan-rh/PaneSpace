@@ -43,8 +43,10 @@ actor OperationUndoService {
         }
     }
 
+    /// Cloud drives keep removed items in a recycle bin PaneSpace cannot address by path, so
+    /// operations that touched a drive are recorded but not undone.
     static func canUndo(_ record: OperationRecord) -> Bool {
-        !record.isUndone && !record.items.isEmpty
+        !record.isUndone && !record.items.isEmpty && !record.touchesCloudDrive
     }
 
     /// Returns the folders whose contents changed, so open panes can refresh.

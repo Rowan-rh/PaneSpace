@@ -81,9 +81,10 @@ struct BrowserPaneView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            let localURLs = urls.filter(\.isFileURL)
-            guard !localURLs.isEmpty else { return false }
-            droppedURLs = localURLs
+            // Cloud items can only come from another PaneSpace pane; other non-file URLs are ignored.
+            let transferableURLs = urls.filter { $0.isFileURL || CloudLocation.isCloud($0) }
+            guard !transferableURLs.isEmpty else { return false }
+            droppedURLs = transferableURLs
             showsDropChoices = true
             return true
         }
@@ -232,11 +233,20 @@ struct BrowserPaneView: View {
     }
 
     private func trashConfirmationMessage(for targets: [FileItem]) -> String {
+        // A drive's recycle bin is not the Mac's Trash, and PaneSpace cannot undo from it.
+        if let cloudURL = targets.first?.url, CloudLocation.isCloud(cloudURL) {
+            let drive = appModel.cloudAccounts.account(for: cloudURL)?.name ?? ""
+            if targets.count == 1, let item = targets.first {
+                return L10n.format("“%@” will be deleted from %@. The service's recycle bin usually keeps deleted items for a limited time.", item.name, drive)
+            }
+            return L10n.format("%lld items will be deleted from %@. The service's recycle bin usually keeps deleted items for a limited time.", Int64(targets.count), drive)
+        }
         if targets.count == 1, let item = targets.first {
             return L10n.format("“%@” will be moved to the Trash.", item.name)
         }
         return L10n.format("%lld items will be moved to the Trash.", Int64(targets.count))
     }
+
 
     private func navigateToParentFromKeyboard() -> Bool {
         guard !model.isLoading, model.goUp() else { return false }
@@ -275,14 +285,14 @@ private struct TabStripView: View {
                                         )
 
                                     if pinnedTabStyle != "iconOnly" || model.activeTabID == tab.id {
-                                        Text(tab.title)
+                                        Text(title(for: tab))
                                             .lineLimit(1)
                                     }
                                 }
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(tab.title)
+                            .accessibilityLabel(title(for: tab))
                             .accessibilityAddTraits(
                                 model.activeTabID == tab.id ? [.isSelected] : []
                             )
@@ -327,6 +337,11 @@ private struct TabStripView: View {
         }
         .frame(height: 36)
         .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    /// Cloud tabs are named after their folder, or the drive's name at its root.
+    private func title(for tab: BrowserTab) -> String {
+        appModel.cloudAccounts.title(for: tab.url) ?? tab.title
     }
 
     @ViewBuilder
@@ -699,13 +714,13 @@ private struct PathBarView: View {
         Button("New Folder") { appModel.requestNewFolder(from: slot) }
             .disabled(model.isPerformingOperation)
         Button("Show in Finder") { model.revealSelectionInFinder() }
-            .disabled(model.selectedItems.isEmpty)
+            .disabled(model.selectedItems.isEmpty || model.isShowingCloudLocation)
         Divider()
         Button("Open in Terminal") { model.openInTerminal() }
-            .disabled(model.isPerformingOperation)
+            .disabled(model.isPerformingOperation || model.isShowingCloudLocation)
         Button("Copy Path") {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(model.currentURL.path, forType: .string)
+            NSPasteboard.general.setString(appModel.cloudAccounts.displayPath(for: model.currentURL), forType: .string)
         }
     }
 }
@@ -983,6 +998,7 @@ private struct ColumnItemRow: View {
 }
 
 private struct BreadcrumbView: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var model: BrowserPaneModel
 
     var body: some View {
@@ -994,7 +1010,7 @@ private struct BreadcrumbView: View {
                     } label: {
                         HStack(spacing: 4) {
                             if index == 0 {
-                                Image(systemName: "externaldrive.fill")
+                                Image(systemName: rootSymbol)
                             }
                             Text(item.title)
                                 .lineLimit(1)
@@ -1017,10 +1033,23 @@ private struct BreadcrumbView: View {
                 }
             }
         }
-        .help(model.currentURL.path)
+        .help(appModel.cloudAccounts.displayPath(for: model.currentURL))
+    }
+
+    private var rootSymbol: String {
+        CloudLocation(model.currentURL)?.service.systemImage ?? "externaldrive.fill"
     }
 
     private var items: [(title: String, url: URL)] {
+        if let location = CloudLocation(model.currentURL) {
+            var current = CloudLocation(service: location.service, accountID: location.accountID, path: "/")
+            var result: [(String, URL)] = [(appModel.cloudAccounts.title(for: current.url) ?? L10n.text(location.service.title), current.url)]
+            for component in location.path.split(separator: "/") {
+                current = current.appending(String(component))
+                result.append((String(component), current.url))
+            }
+            return result
+        }
         let components = model.currentURL.standardizedFileURL.pathComponents
         var url = URL(fileURLWithPath: "/", isDirectory: true)
         var result: [(String, URL)] = [("Mac", url)]
@@ -1148,7 +1177,7 @@ private struct PaneBackgroundActionsMenu: View {
         Button("New Folder") { appModel.requestNewFolder(in: directory, from: slot) }
             .disabled(model.isPerformingOperation)
         Button("Open in Terminal") { model.openInTerminal(directory) }
-            .disabled(model.isPerformingOperation)
+            .disabled(model.isPerformingOperation || model.isShowingCloudLocation)
     }
 }
 
@@ -1162,6 +1191,7 @@ private struct FileItemActionsMenu: View {
         Button("Open") { model.open(targets) }
         Button("Quick Look") { model.preview(targets) }
         Button("Show in Finder") { model.reveal(targets) }
+            .disabled(targets.allSatisfy { !$0.url.isFileURL })
         Divider()
         TransferActionsMenu(slot: slot, urls: targets.map(\.url))
         Button(targets.count > 1 ? L10n.format("Rename %lld Items…", Int64(targets.count)) : L10n.text("Rename…")) {
@@ -1271,6 +1301,7 @@ private struct FileRow: View {
 }
 
 private struct StatusBarView: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var model: BrowserPaneModel
 
     var body: some View {
@@ -1303,7 +1334,7 @@ private struct StatusBarView: View {
             .disabled(true)
             .help("Side Preview — Planned")
 
-            Text(model.currentURL.path)
+            Text(appModel.cloudAccounts.displayPath(for: model.currentURL))
                 .lineLimit(1)
                 .truncationMode(.head)
                 .frame(maxWidth: 220, alignment: .trailing)

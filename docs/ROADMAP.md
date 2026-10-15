@@ -47,13 +47,14 @@ Status marks: `[x]` done, `[ ]` not started, `[~]` implemented but not finished 
 
 ## 0.4 — Remote providers
 
-On hold until 0.2 and 0.3 are complete.
+SFTP, SMB, and WebDAV remain on hold until 0.2 and 0.3 are complete. Cloud drives were brought forward at the user's request ([ADR 0012](adr/0012-cloud-drive-providers.md)).
 
+- [x] Google Drive and Baidu Netdisk through their web APIs
 - [ ] Async capability-oriented provider API
 - [ ] SFTP
 - [ ] SMB
 - [ ] WebDAV
-- [ ] Keychain credential storage
+- [x] Keychain credential storage
 - [ ] Reconnect, timeout, and offline state handling
 
 ## 0.5 — Platform integration
