@@ -1,7 +1,26 @@
 import Darwin
 import Foundation
 
-actor LocalTransferService {
+/// The steps the transfer queue runs for each item. Splitting them lets the queue ask about
+/// conflicts between checking and copying, whichever storage the item comes from or goes to.
+protocol FileTransferServicing: Sendable {
+    func validate(source: URL, destinationDirectory: URL, kind: FileTransferKind) async throws
+    func destination(for source: URL, in directory: URL) async -> URL
+    func isDuplicate(source: URL, in destinationDirectory: URL, kind: FileTransferKind) async -> Bool
+    func exists(at url: URL) async -> Bool
+    func transfer(
+        source: URL,
+        to destinationDirectory: URL,
+        kind: FileTransferKind,
+        conflictDecision: FileConflictDecision?,
+        progress: TransferByteCounter?
+    ) async throws -> LocalTransferOutcome?
+    func byteCount(of source: URL) async throws -> Int64
+    @discardableResult
+    func removeSourceAfterCopy(_ source: URL) async throws -> URL?
+}
+
+actor LocalTransferService: FileTransferServicing {
     typealias CopyItem = @Sendable (_ source: URL, _ destination: URL, _ progress: TransferByteCounter?) throws -> Void
 
     private let fileManager: FileManager

@@ -71,6 +71,13 @@ struct OperationRecord: Codable, Identifiable, Equatable, Sendable {
         self.errorMessage = errorMessage
     }
 
+    /// Whether any location the operation touched is in a cloud drive.
+    var touchesCloudDrive: Bool {
+        CloudLocation.isCloud(directory) || items.contains { item in
+            [item.original, item.result].compactMap(\.self).contains(where: CloudLocation.isCloud)
+        }
+    }
+
     var title: String {
         let count = Int64(requestedCount)
         switch kind {

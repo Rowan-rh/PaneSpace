@@ -9,11 +9,18 @@ protocol FileProviding: Sendable {
     @discardableResult
     func moveToTrash(_ item: URL) async throws -> URL?
     func availableCapacity(for directory: URL) async -> Int64?
+    /// A local file URL for `item`, so it can be opened or previewed. Local items are returned
+    /// as they are; cloud providers download a copy.
+    func materialize(_ item: URL) async throws -> URL
 }
 
 extension FileProviding {
     func availableCapacity(for directory: URL) async -> Int64? {
         nil
+    }
+
+    func materialize(_ item: URL) async throws -> URL {
+        item
     }
 
     /// Providers that can list a folder incrementally override this; the default delivers the

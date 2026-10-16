@@ -594,7 +594,7 @@ private struct ExtensionSettingsPage: View {
     var body: some View {
         SettingsPage(title: "Extensions", subtitle: "Optional modules planned after the local file-operation engine.") {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ExtensionCard(title: "Server Connections", detail: "SFTP, SMB, and WebDAV providers.", systemImage: "network")
+                ExtensionCard(title: "Server Connections", detail: "Google Drive and Baidu Netdisk; connect from the sidebar.", systemImage: "network", planned: false)
                 ExtensionCard(title: "Stash Shelf", detail: "A temporary shelf for cross-pane workflows.", systemImage: "tray.full")
                 ExtensionCard(title: "Batch Rename", detail: "Rename several selected items with a live preview.", systemImage: "character.cursor.ibeam", planned: false)
                 ExtensionCard(title: "Archive Browser", detail: "Browse and extract archives as folders.", systemImage: "archivebox")

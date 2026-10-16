@@ -120,6 +120,9 @@ struct ContentView: View {
                 .accessibilityLabel("Settings")
             }
         }
+        .sheet(isPresented: $appModel.isConnectingToServer) {
+            ConnectServerView(cloudAccounts: appModel.cloudAccounts)
+        }
         .sheet(isPresented: $appModel.isCreatingFolder, onDismiss: {
             // Cancel must not leave the target behind for the next command to pick up by accident.
             _ = appModel.takePendingNewFolderDirectory()

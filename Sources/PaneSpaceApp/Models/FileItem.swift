@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct FileItem: Identifiable, Hashable, Sendable {
     let url: URL
@@ -48,7 +49,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
     }
 
     @MainActor var icon: NSImage {
-        FileIconCache.shared.image(for: url)
+        FileIconCache.shared.image(for: url, isFolder: isFolder)
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -65,15 +66,21 @@ private final class FileIconCache {
 
     private let images = NSCache<NSURL, NSImage>()
 
-    func image(for url: URL) -> NSImage {
+    func image(for url: URL, isFolder: Bool) -> NSImage {
         let key = url as NSURL
         if let cached = images.object(forKey: key) {
             return cached
         }
 
-        let image = NSWorkspace.shared.icon(forFile: url.path)
+        let image = url.isFileURL ? NSWorkspace.shared.icon(forFile: url.path) : Self.typeIcon(for: url, isFolder: isFolder)
         images.setObject(image, forKey: key)
         return image
+    }
+
+    /// Cloud items have no file on disk to ask, so they get the icon of their type.
+    private static func typeIcon(for url: URL, isFolder: Bool) -> NSImage {
+        let type = isFolder ? UTType.folder : UTType(filenameExtension: url.pathExtension) ?? .data
+        return NSWorkspace.shared.icon(for: type)
     }
 }
 
