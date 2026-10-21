@@ -79,12 +79,14 @@ rm -rf ~/PaneSpace-signing
 ## 每次发布
 
 1. 确认 `develop` 已合入 `main` 且 CI 通过。
-2. 打 tag（**tag 是版本的唯一来源**）：
+2. 打 tag（**tag 是版本的唯一来源**）。版本号先与维护者确认，tag 必须与确认后的版本号完全一致：
 
    ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
+   git tag v0.1.3
+   git push origin v0.1.3
    ```
+
+   `v0.1.3` 由 `scripts/version-from-tag.sh` 派生出的版本号与构建号是 `0.1.3` / `10399`。
 
 3. `push` tag 触发 `.github/workflows/release.yml`：跑测试 → 从 tag 派生版本 → 在临时 keychain 中导入证书 → 签名构建 → 校验签名 → 打包 → 生成 `.sha256` 和 `.sig` 并验签 → 上传到对应 Release。Release 不存在时创建 **draft**，tag 含 `-` 时标记为 prerelease。已有的 draft 或正式 Release 会**追加**（覆盖同名）资产，所以同一个 tag 重跑不会产生重复 draft。appcast.xml 也作为附件上传到 Release，供第 4 步取用。
 4. 在 GitHub 上检查 draft Release 的发行说明，**手动点击发布**。
@@ -175,6 +177,8 @@ Sparkle 按 `CFBundleVersion` 的**各段数值**比较新旧（不是按字符�
 | `v0.2.0-rc.38` | `0.2.0-rc.38` | `20097` |
 | `v0.2.0` | `0.2.0` | `20099` |
 
+表里的 `0.2.0` 只是一个示例系列。实际发布用的版本号与构建号一律由 `scripts/version-from-tag.sh` 从 tag 派生，不要照抄表里的数字。
+
 即 `alpha.29 < beta.1 < beta.29 < rc.1 < rc.38 < 正式版`，装了 beta.2 的用户一定能收到 rc.1。59 和 98 是刻意留空的分隔位，避免误打的 tag 落在已发布过的构建号上。
 
 以下 tag 直接失败，不会产生错误版本的应用：
@@ -192,8 +196,8 @@ Sparkle 按 `CFBundleVersion` 的**各段数值**比较新旧（不是按字符�
 需要手工验证签名构建时（身份可用证书 SHA-1 代替名字，自签名证书无需额外信任设置）：
 
 ```bash
-PANESPACE_VERSION=0.2.0 \
-PANESPACE_BUILD=20099 \
+PANESPACE_VERSION=0.1.3 \
+PANESPACE_BUILD=10399 \
 PANESPACE_SIGN_IDENTITY="PaneSpace Self-Signed" \
 PANESPACE_ED_PUBLIC_KEY="$(cat scripts/update-public-ed25519.txt)" \
 PANESPACE_APPCAST_URL="https://raw.githubusercontent.com/Rowan-rh/PaneSpace/appcast/appcast.xml" \
