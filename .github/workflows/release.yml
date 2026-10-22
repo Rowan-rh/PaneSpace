@@ -243,6 +243,16 @@ jobs:
             -T /usr/bin/codesign -A
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$password" "$keychain"
+          # On the macos-26 runner `codesign --keychain` alone answers "no identity
+          # found" for a keychain that is not on the user search list (the v0.1.3
+          # tag run failed exactly there, while the same steps sign fine on a
+          # macOS 27 host). build-app.sh still passes --keychain so a local build
+          # never has to touch the developer's search list; the runner is
+          # ephemeral, and `security delete-keychain` in the cleanup step drops
+          # the entry again.
+          existing_keychains="$(security list-keychains -d user | tr -d '"')"
+          # shellcheck disable=SC2086 # one path per word; runner paths have no spaces
+          security list-keychains -d user -s "$keychain" $existing_keychains
           # The .p12 was exported with OpenSSL's -legacy algorithms, so OpenSSL 3
           # needs -legacy to read the certificate back out.
           P12_PASSWORD="$CERT_PASSWORD" openssl pkcs12 -legacy -in "$p12" \
