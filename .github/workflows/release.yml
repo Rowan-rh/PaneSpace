@@ -472,6 +472,10 @@ jobs:
 
           # The private key goes in on stdin and never in argv, matching the
           # convention the release signing step already uses.
+          # macOS /bin/bash is 3.2, where "${arr[@]}" on an empty array is an
+          # "unbound variable" under `set -u` -- which is how the first v0.1.3
+          # run died here, a final release having no channel. Every expansion of
+          # an array that can be empty below uses ${arr[@]+"${arr[@]}"}.
           channel_args=()
           if [[ "$PRERELEASE" == "true" ]]; then
             # Both channels live in this one feed: a beta tag tags the new item,
@@ -503,7 +507,7 @@ jobs:
           printf '%s' "$PANESPACE_ED25519_PRIVATE_KEY" \
             | "$generator" --ed-key-file - \
                 --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
-                "${channel_args[@]}" \
+                ${channel_args[@]+"${channel_args[@]}"} \
                 "$input"
 
           # generate_appcast writes into its input directory.
@@ -656,6 +660,7 @@ jobs:
               gh release upload "$TAG" "$asset" --clobber
             done
           else
+            # Empty for a final release; see the bash 3.2 note on channel_args.
             prerelease_flag=()
             if [[ "$PRERELEASE" == "true" ]]; then
               prerelease_flag=(--prerelease)
@@ -669,7 +674,7 @@ jobs:
 
           Self-signed code signing; not notarised by Apple, so Gatekeeper asks
           once on first install. See docs/RELEASING.md." \
-              "${prerelease_flag[@]}"
+              ${prerelease_flag[@]+"${prerelease_flag[@]}"}
           fi
           echo "Release assets uploaded"
 
