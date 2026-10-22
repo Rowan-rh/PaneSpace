@@ -56,7 +56,7 @@ feed，也是 `publish` job 作为 Release 附件上传的同一份文件。首�
 
 ### 3. 提交公钥
 
-公钥是公开值，提交到 `scripts/update-public-ed25519.txt`（仓库内当前是占位符）：
+公钥是公开值，提交到 `scripts/update-public-ed25519.txt`（仓库内已提交 0.1.3 起使用的正式公钥；只有重新生成签名材料时才需要这一步）：
 
 ```bash
 cat ~/PaneSpace-signing/ed25519-public-key.txt > scripts/update-public-ed25519.txt
