@@ -64,7 +64,7 @@
 - [ ] **正式发行签名与公证**：使用 Developer ID 签名并完成 Apple 公证。
 - [x] **应用内更新**：集成 Sparkle，app 内提供更新横幅、“PaneSpace > 检查更新…”菜单入口和设置页更新区；更新源强制 https，feed 与安装包用 Ed25519 签名校验，见 [ADR 0011](adr/0011-in-app-updates.md)。
 - [~] **自动发布和更新元数据**：`.github/workflows/release.yml` 由 tag 触发，完成测试、签名构建、打包、EdDSA 签名与校验，并把签名的 appcast 发布到 `appcast` 分支；appcast 只在 Release 公开之后写入，且会先校验该 Release 的下载地址可匿名访问。流程见[发布流程](RELEASING.md)。
-  尚待完成：还没有跑过一次真实发布，`scripts/update-public-ed25519.txt` 仍是占位符，第一次打 tag 前必须换成真实公钥。
+  尚待完成：正式公钥已提交到 `scripts/update-public-ed25519.txt`，但还没有跑过一次真实发布；0.1.3 是第一次走这条流程。
 
 ## 稳定性与项目维护
 
