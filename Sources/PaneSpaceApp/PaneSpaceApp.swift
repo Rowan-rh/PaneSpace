@@ -25,6 +25,9 @@ final class PaneSpaceApplicationDelegate: NSObject, NSApplicationDelegate {
         // both delegates passed at init because the controller has no setter for
         // them, and held in a stored property so Sparkle's weak references stay
         // valid.
+
+        // Copies of cloud files opened in the last session are not needed any more.
+        CloudCache.clear()
     }
 }
 

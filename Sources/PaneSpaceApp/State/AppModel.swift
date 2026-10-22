@@ -24,8 +24,10 @@ final class AppModel: ObservableObject {
     /// Incremented only when the keyboard changes the active pane, so the new pane can take
     /// keyboard focus without stealing it from a control the user clicked.
     @Published private(set) var paneFocusRequest = 0
-    @Published private(set) var transferQueue = FileTransferQueueModel()
+    @Published private(set) var transferQueue: FileTransferQueueModel
     let workspaceShortcuts: WorkspaceShortcutsModel
+    let cloudAccounts: CloudAccountsModel
+    @Published var isConnectingToServer = false
     let operationHistory: OperationHistoryModel
     let updates: UpdateModel
     @Published var isShowingOperationHistory = false
@@ -47,7 +49,8 @@ final class AppModel: ObservableObject {
         operationHistory: OperationHistoryModel? = nil,
         undoService: OperationUndoService = OperationUndoService(),
         filePasteboard: FilePasteboard? = nil,
-        updates: UpdateModel? = nil
+        updates: UpdateModel? = nil,
+        cloudAccounts: CloudAccountsModel? = nil
     ) {
         self.defaults = defaults
         self.undoService = undoService
@@ -55,6 +58,14 @@ final class AppModel: ObservableObject {
         self.operationHistory = operationHistory ?? OperationHistoryModel()
         self.updates = updates ?? UpdateModel(defaults: defaults)
         workspaceShortcuts = WorkspaceShortcutsModel(defaults: defaults)
+        let cloudAccounts = cloudAccounts ?? CloudAccountsModel(defaults: defaults)
+        self.cloudAccounts = cloudAccounts
+        // Every pane and the transfer queue reach local folders and connected drives alike. Each
+        // pane gets its own local provider so one pane reading a huge folder never queues another.
+        let registry = cloudAccounts.registry
+        transferQueue = FileTransferQueueModel(
+            service: RoutingTransferService(cloud: CloudTransferService(registry: cloudAccounts.registry))
+        )
         // Bound before the observation below so the sink sees the same instance.
         let updateModel = self.updates
         let fileManager = FileManager.default
@@ -81,18 +92,22 @@ final class AppModel: ObservableObject {
 
         primaryPane = BrowserPaneModel(
             url: startupURL,
+            provider: RoutingFileProvider(cloud: registry),
             session: restoredSession?.panes[.primary]
         )
         secondaryPane = BrowserPaneModel(
             url: applications,
+            provider: RoutingFileProvider(cloud: registry),
             session: restoredSession?.panes[.secondary]
         )
         tertiaryPane = BrowserPaneModel(
             url: home,
+            provider: RoutingFileProvider(cloud: registry),
             session: restoredSession?.panes[.tertiary]
         )
         quaternaryPane = BrowserPaneModel(
             url: home,
+            provider: RoutingFileProvider(cloud: registry),
             session: restoredSession?.panes[.quaternary]
         )
 
@@ -135,6 +150,9 @@ final class AppModel: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &paneObservationCancellables)
         workspaceShortcuts.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &paneObservationCancellables)
+        cloudAccounts.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &paneObservationCancellables)
         updateModel.objectWillChange
@@ -315,7 +333,7 @@ final class AppModel: ObservableObject {
     /// the path bar names it, and it is the only way to paste into an empty folder there.
     @discardableResult
     func pasteFromPasteboard(into slot: PaneSlot) -> Bool {
-        let urls = filePasteboard.fileURLs()
+        let urls = filePasteboard.fileURLs() + filePasteboard.cloudURLs()
         guard !urls.isEmpty else { return false }
         transferQueue.enqueue(
             kind: .copy,

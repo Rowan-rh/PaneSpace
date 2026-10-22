@@ -340,7 +340,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         locationErrorMessage = nil
         let baseDirectory = currentURL
         do {
-            let destination = try await pathResolver.resolve(input, relativeTo: baseDirectory)
+            let destination = try await resolveEnteredLocation(input, relativeTo: baseDirectory)
             guard currentURL == baseDirectory else {
                 isResolvingLocation = false
                 return false
@@ -353,6 +353,28 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             isResolvingLocation = false
             return false
         }
+    }
+
+    /// Inside a cloud drive a typed path stays in that drive: absolute paths start at its root.
+    /// The folder is checked by the load that follows, as remote folders cannot be checked cheaply.
+    private func resolveEnteredLocation(_ input: String, relativeTo baseDirectory: URL) async throws -> URL {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let typedURL = URL(string: trimmed), CloudLocation(typedURL) != nil {
+            return typedURL
+        }
+        guard let location = CloudLocation(baseDirectory) else {
+            return try await pathResolver.resolve(input, relativeTo: baseDirectory)
+        }
+        guard !trimmed.isEmpty else { throw LocationError.empty }
+        var path = trimmed.hasPrefix("/") ? "" : location.path
+        for component in trimmed.split(separator: "/") {
+            switch component {
+            case ".": continue
+            case "..": path = (path as NSString).deletingLastPathComponent
+            default: path = (path as NSString).appendingPathComponent(String(component))
+            }
+        }
+        return CloudLocation(service: location.service, accountID: location.accountID, path: path).url
     }
 
     func clearLocationError() {
@@ -596,7 +618,7 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
         if item.isFolder {
             navigate(to: item.url)
         } else {
-            NSWorkspace.shared.open(item.url)
+            openFiles([item])
         }
     }
 
@@ -607,9 +629,47 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
             open(item)
             return
         }
-        for item in targets where !item.isFolder {
-            NSWorkspace.shared.open(item.url)
+        openFiles(targets.filter { !$0.isFolder })
+    }
+
+    /// Local files open directly; cloud files are downloaded to a cache first, with the pane busy
+    /// meanwhile so the user sees that something is happening.
+    private func openFiles(_ files: [FileItem]) {
+        withLocalCopies(of: files) { urls in
+            for url in urls { NSWorkspace.shared.open(url) }
         }
+    }
+
+    private func withLocalCopies(of files: [FileItem], perform action: @escaping @MainActor ([URL]) -> Void) {
+        guard !files.isEmpty else { return }
+        guard files.contains(where: { CloudLocation.isCloud($0.url) }) else {
+            action(files.map(\.url))
+            return
+        }
+        guard !isPerformingOperation else { return }
+        let provider = provider
+        beginOperation()
+        operationTask = Task {
+            do {
+                var urls: [URL] = []
+                for file in files {
+                    urls.append(try await provider.materialize(file.url))
+                }
+                guard !Task.isCancelled else { return }
+                finishOperation()
+                action(urls)
+            } catch is CancellationError {
+                finishOperation()
+            } catch {
+                finishOperation(error: error)
+            }
+        }
+    }
+
+    /// True while the pane shows a cloud drive, where Finder, Terminal, and file-system
+    /// observation have nothing to work with.
+    var isShowingCloudLocation: Bool {
+        CloudLocation.isCloud(currentURL)
     }
 
     /// Reloads the visible contents. In the column browser this keeps the column path and
@@ -860,10 +920,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     private var directoriesToObserve: Set<URL> {
         guard observesDirectories else { return [] }
+        // Cloud drives send no file-system events; they refresh on demand instead.
         if viewMode == .columns, !columns.isEmpty {
-            return Set(columns.map { $0.directory.standardizedFileURL })
+            return Set(columns.map { $0.directory.standardizedFileURL }.filter(\.isFileURL))
         }
-        return [currentURL.standardizedFileURL]
+        return currentURL.isFileURL ? [currentURL.standardizedFileURL] : []
     }
 
     func toggleHiddenFiles() {
@@ -1055,7 +1116,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
     }
 
     func preview(_ targets: [FileItem]) {
-        QuickLookCoordinator.shared.show(urls: targets.map(\.url))
+        withLocalCopies(of: targets.filter { !$0.isFolder || !CloudLocation.isCloud($0.url) }) { urls in
+            QuickLookCoordinator.shared.show(urls: urls)
+        }
     }
 
     func revealSelectionInFinder() {
@@ -1064,7 +1127,9 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     func reveal(_ targets: [FileItem]) {
         guard !targets.isEmpty else { return }
-        NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.url))
+        let localURLs = targets.map(\.url).filter(\.isFileURL)
+        guard !localURLs.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(localURLs)
     }
 
     /// Opens a folder in a terminal. The target is the folder this pane shows unless `directory`
@@ -1159,7 +1224,11 @@ final class BrowserPaneModel: ObservableObject, Identifiable {
 
     /// `standardizedFileURL` drops the `/private` prefix of `/var` and `/tmp` only while the path
     /// exists, so a renamed item's old URL and a stored tab URL can disagree. Normalize textually.
-    static func comparablePath(_ url: URL) -> String {
+    /// Cloud locations include their drive, so the same path in two drives never matches.
+    nonisolated static func comparablePath(_ url: URL) -> String {
+        if let location = CloudLocation(url) {
+            return location.comparisonKey
+        }
         var path = url.standardizedFileURL.path
         for alias in ["/private/var", "/private/tmp", "/private/etc"]
         where path == alias || path.hasPrefix(alias + "/") {

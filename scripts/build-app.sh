@@ -81,6 +81,22 @@ plutil -insert NSDownloadsFolderUsageDescription -string "PaneSpace needs access
 plutil -insert NSNetworkVolumesUsageDescription -string "PaneSpace needs access to browse and manage items on connected network volumes." "$plist_path"
 plutil -insert NSRemovableVolumesUsageDescription -string "PaneSpace needs access to browse and manage items on connected removable volumes." "$plist_path"
 
+# Cloud drive app registrations are optional and never committed. When the environment provides
+# them, users only sign in; otherwise they enter their own registration once. See
+# docs/DEVELOPMENT.md, "Cloud drive credentials".
+typeset -A cloud_credentials=(
+    PANESPACE_GOOGLE_DRIVE_CLIENT_ID PaneSpaceGoogleDriveClientID
+    PANESPACE_GOOGLE_DRIVE_CLIENT_SECRET PaneSpaceGoogleDriveClientSecret
+    PANESPACE_BAIDU_APP_KEY PaneSpaceBaiduNetdiskClientID
+    PANESPACE_BAIDU_SECRET_KEY PaneSpaceBaiduNetdiskClientSecret
+    PANESPACE_BAIDU_APP_FOLDER PaneSpaceBaiduNetdiskAppFolder
+)
+for variable key in "${(@kv)cloud_credentials}"; do
+    if [[ -n "${(P)variable:-}" ]]; then
+        plutil -insert "$key" -string "${(P)variable}" "$plist_path"
+    fi
+done
+
 if [[ -n "$public_ed_key" ]]; then
     plutil -insert SUPublicEDKey -string "$public_ed_key" "$plist_path"
     # Sparkle 2 reads the appcast from SUFeedURL. There is deliberately no

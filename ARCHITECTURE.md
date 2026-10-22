@@ -13,14 +13,18 @@ SwiftUI views
 BrowserPaneModel ─── AppModel
     │
     ▼
-FileProviding protocol
+RoutingFileProvider (FileProviding)
     │
-    ├── LocalFileProvider
-    ├── SFTPProvider       planned
-    ├── SMBProvider        planned
-    └── WebDAVProvider     planned
+    ├── LocalFileProvider            file URLs
+    └── CloudProviderRegistry        cloud drive URLs
+          ├── GoogleDriveProvider    Drive v3 REST API
+          ├── BaiduNetdiskProvider   xpan open platform API
+          ├── SFTPProvider           planned
+          ├── SMBProvider            planned
+          └── WebDAVProvider         planned
 
-AppModel ─── FileTransferQueueModel ─── LocalTransferService
+AppModel ─── FileTransferQueueModel ─── RoutingTransferService ─── LocalTransferService / CloudTransferService
+AppModel ─── CloudAccountsModel ─── CloudProviderRegistry / CloudCredentialStore (Keychain)
 AppModel ─── OperationHistoryModel ─── OperationHistoryStore / OperationUndoService
 AppModel ─── WorkspaceShortcutsModel ─── UserDefaults / LocalPathResolver
 AppModel ─── UpdateModel ─── SPUStandardUpdaterController / UpdateFeed
@@ -89,9 +93,17 @@ Preferences are Sparkle's own keys (`SUEnableAutomaticChecks`, `betaUpdates`, an
 
 Each check on the fallback path carries a generation. A check that has been superseded by a newer one — a second "Check Now", a channel switch, automatic checks being turned off — still runs to completion before its caller resumes, and may not clear `isChecking` or publish a result on the way out; only the check that still owns the model may. That is what keeps a replaced check from overwriting the answer that replaced it, and what keeps a stop from failing to cancel a check it never held a handle to.
 
+## Cloud drives
+
+Google Drive and Baidu Netdisk offer neither SMB, WebDAV, nor SFTP, so each has a provider built on its own web API ([ADR 0012](docs/adr/0012-cloud-drive-providers.md)). A location in a drive is a URL with a provider-specific scheme and the account's ID as host, such as `panespace-gdrive://<account>/Folder/`, so tabs, history, sessions, and the transfer queue hold it like a local folder. `CloudLocation` parses and builds these URLs; `BrowserPaneModel.comparablePath` includes the drive so equal paths in different drives never match.
+
+`CloudAccountsModel` owns the connected drives: it persists their non-secret description in preferences, keeps tokens and app credentials in Keychain through `CloudCredentialStore`, runs sign-in (`GoogleAuthorizer` with a loopback redirect and PKCE, `BaiduDeviceAuthorizer` with a device code), and registers one `RemoteFileProviding` per account in the shared `CloudProviderRegistry`. Each pane's `RoutingFileProvider` and the queue's `RoutingTransferService` look providers up there by URL. `CloudAccessTokenSource` refreshes expired tokens once per account and stores rotated refresh tokens.
+
+`CloudTransferService` copies between the Mac and drives with the same safety rules as local transfers: it assembles the copy under a hidden staging name, publishes it by renaming, trashes a replaced item only afterwards, and removes a moved source last. Moves inside one drive are performed by the service. Opening or previewing a cloud file downloads it to a cache folder that is cleared at launch. Drives send no file-system events, so cloud panes reload on navigation, refresh, and transfer completion. Operations that touch a drive are recorded in the history but cannot be undone.
+
 ## Security model
 
-For a distributable sandboxed build, user-selected folders should be persisted as security-scoped bookmarks. Remote credentials belong in Keychain. Providers must never write credentials to preferences, logs, or workspace files.
+For a distributable sandboxed build, user-selected folders should be persisted as security-scoped bookmarks. Remote credentials belong in Keychain; cloud drive tokens and app credentials are stored there, and the OAuth redirect listener accepts connections on 127.0.0.1 only. Providers must never write credentials to preferences, logs, or workspace files.
 
 ## Clean-room policy
 
@@ -99,4 +111,4 @@ PaneSpace is implemented from public platform behavior and Apple documentation. 
 
 ## Planned evolution
 
-The operation queue is described in [ADR 0003](docs/adr/0003-operation-queue.md), the asynchronous primitive boundary in [ADR 0004](docs/adr/0004-async-provider-primitives.md), and session persistence in [ADR 0005](docs/adr/0005-versioned-session-state.md). Capability reporting and remote-specific cancellation remain to be added before remote backends.
+The operation queue is described in [ADR 0003](docs/adr/0003-operation-queue.md), the asynchronous primitive boundary in [ADR 0004](docs/adr/0004-async-provider-primitives.md), and session persistence in [ADR 0005](docs/adr/0005-versioned-session-state.md). Cloud drives use the routing and transfer boundaries described above ([ADR 0012](docs/adr/0012-cloud-drive-providers.md)); explicit capability reporting remains to be added before SFTP, SMB, and WebDAV.
