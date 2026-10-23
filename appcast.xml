@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>PaneSpace</title>
+        <item>
+            <title>0.1.3</title>
+            <pubDate>Thu, 22 Oct 2026 15:21:11 +0000</pubDate>
+            <sparkle:version>10399</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Rowan-rh/PaneSpace/releases/download/v0.1.3/PaneSpace-0.1.3-macos-arm64.zip" length="3610417" type="application/octet-stream" sparkle:edSignature="5OQTthHRJtmPhrox2UHj1auxmpo5S0tSbf3NpCRUHwNFeD59BpiePIwVCGp2WwW4jzlhEDTxjh7J6c2yZYdGAQ=="></enclosure>
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: aKv5etoWNXHr1z9ZJm7CPVdX9R8O8C15UKSyhnSqKSs8UMsb0yxXOek9lR19I5XYVQvy8LdOOZhMuQGEMvjiBg==
+length: 1139
+-->
